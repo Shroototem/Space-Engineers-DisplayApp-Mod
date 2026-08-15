@@ -20,15 +20,20 @@ namespace DisplayApps
         class PowerScan : IScanData
         {
             public readonly List<Battery> Batteries = new List<Battery>();
-            public readonly List<string> BatteryNames = new List<string>();
             public float SolarCur, SolarMax, WindCur, WindMax, ReactCur, ReactMax, EngCur, EngMax;
             public BatterySummary Bat;
             public int SolarCount, WindCount, ReactCount, EngCount, BatCount;
 
+            // Grid-wide strings, built once per grid per window in the scan.
+            // Per-battery row strings stay draw-side on purpose: only visible
+            // rows render, so precomputing all N would be a pessimization.
+            public string StorageText, FlowText, MinTimeText, BatHeader;
+            public readonly string[] CatTexts = new string[4];
+            public readonly float[] CatRatios = new float[4];
+
             public void Clear()
             {
                 Batteries.Clear();
-                BatteryNames.Clear();
                 SolarCur = 0f;
                 SolarMax = 0f;
                 WindCur = 0f;
@@ -43,6 +48,15 @@ namespace DisplayApps
                 ReactCount = 0;
                 EngCount = 0;
                 BatCount = 0;
+                StorageText = null;
+                FlowText = null;
+                MinTimeText = null;
+                BatHeader = null;
+                for (int i = 0; i < CatTexts.Length; i++)
+                {
+                    CatTexts[i] = null;
+                    CatRatios[i] = 0f;
+                }
             }
         }
 
@@ -68,16 +82,12 @@ namespace DisplayApps
                 _frame = frame;
                 if (GuardRemoteGrid(frame, scan)) return;
 
-                float solarCur = scan.SolarCur, solarMax = scan.SolarMax;
-                float windCur = scan.WindCur, windMax = scan.WindMax;
-                float reactCur = scan.ReactCur, reactMax = scan.ReactMax;
-                float engCur = scan.EngCur, engMax = scan.EngMax;
                 float batStored = scan.Bat.Stored, batMaxStored = scan.Bat.Max;
-                float batIn = scan.Bat.In, batOut = scan.Bat.Out, batMaxOut = scan.Bat.MaxOut;
+                float batMaxOut = scan.Bat.MaxOut;
                 int solarCount = scan.SolarCount, windCount = scan.WindCount;
                 int reactCount = scan.ReactCount, engCount = scan.EngCount, batCount = scan.BatCount;
 
-                float netBat = batIn - batOut;
+                float netBat = scan.Bat.NetFlow;
 
                 if (solarCount + windCount + reactCount + engCount + batCount == 0)
                 {
@@ -87,37 +97,19 @@ namespace DisplayApps
 
                 float batRatio = batMaxStored > 0f ? batStored / batMaxStored : 0f;
                 AddText(frame, "BATTERY STORAGE", new Vector2(Left, 52f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, $"{batStored:0.00} / {batMaxStored:0.00} MWh ({batRatio * 100f:0}%)", new Vector2(Right, 52f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                AddText(frame, scan.StorageText, new Vector2(Right, 52f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
 
                 RectangleF batBar = new RectangleF(new Vector2(Left, 68f * S), new Vector2(Right - Left, 14f * S));
                 DrawBar(frame, batBar, batRatio, BarColor(batRatio));
 
                 AddText(frame, "NET POWER FLOW", new Vector2(Left, 88f * S), 0.48f * S, new Color(180, 190, 205), TextAlignment.LEFT);
-
-                string flowLabel = "0.00 MW (IDLE)";
-                if (netBat > 0.001f)
-                {
-                    float hours = (batMaxStored - batStored) / netBat;
-                    string eta = FormatTimeHours(hours);
-                    flowLabel = $"+{netBat:0.00} MW IN ({eta} TO FULL)";
-                }
-                else if (netBat < -0.001f)
-                {
-                    float hours = batStored / -netBat;
-                    string eta = FormatTimeHours(hours);
-                    flowLabel = $"{netBat:0.00} MW OUT ({eta} TO EMPTY)";
-                }
-
-                AddText(frame, flowLabel, new Vector2(Right, 88f * S), 0.48f * S, netBat > 0.001f ? new Color(50, 210, 90) : (netBat < -0.001f ? new Color(230, 60, 50) : new Color(160, 170, 185)), TextAlignment.RIGHT);
+                AddText(frame, scan.FlowText, new Vector2(Right, 88f * S), 0.48f * S, netBat > 0.001f ? new Color(50, 210, 90) : (netBat < -0.001f ? new Color(230, 60, 50) : new Color(160, 170, 185)), TextAlignment.RIGHT);
 
                 RectangleF flowBar = new RectangleF(new Vector2(Left, 104f * S), new Vector2(Right - Left, 14f * S));
                 DrawCenterFlowBar(frame, flowBar, netBat, batMaxOut > 0f ? batMaxOut : 10f);
 
                 AddText(frame, "TIME AT MAX OUTPUT", new Vector2(Left, 122f * S), 0.44f * S, new Color(140, 145, 155), TextAlignment.LEFT);
-                string minTime = "--";
-                if (batMaxOut > 0.001f && batMaxStored > 0.001f)
-                    minTime = $"EMPTY {FormatTimeHours(batStored / batMaxOut)}   |   FULL {FormatTimeHours((batMaxStored - batStored) / batMaxOut)}";
-                AddText(frame, minTime, new Vector2(Right, 122f * S), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
+                AddText(frame, scan.MinTimeText, new Vector2(Right, 122f * S), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
 
                 DrawDivider(frame, 138f);
                 AddText(frame, "POWER SOURCE BREAKDOWN", new Vector2(Left, 144f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
@@ -127,13 +119,13 @@ namespace DisplayApps
 
                 int catIdx = 0;
                 if (solarCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "SOLAR PANELS", "MyObjectBuilder_Component/SolarCell", solarCount, CatValue(solarCount, solarCur, solarMax), CatRatio(solarCur, solarMax), CatColor(solarCount, solarCur), catY + catIdx++ * catH);
+                    DrawCategoryRow(frame, "SOLAR PANELS", "MyObjectBuilder_Component/SolarCell", solarCount, scan.CatTexts[0], scan.CatRatios[0], CatColor(solarCount, scan.SolarCur), catY + catIdx++ * catH);
                 if (windCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "WIND TURBINES", "MyObjectBuilder_Component/Motor", windCount, CatValue(windCount, windCur, windMax), CatRatio(windCur, windMax), CatColor(windCount, windCur), catY + catIdx++ * catH);
+                    DrawCategoryRow(frame, "WIND TURBINES", "MyObjectBuilder_Component/Motor", windCount, scan.CatTexts[1], scan.CatRatios[1], CatColor(windCount, scan.WindCur), catY + catIdx++ * catH);
                 if (reactCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "NUCLEAR REACTORS", "MyObjectBuilder_Component/Reactor", reactCount, CatValue(reactCount, reactCur, reactMax), CatRatio(reactCur, reactMax), CatColor(reactCount, reactCur), catY + catIdx++ * catH);
+                    DrawCategoryRow(frame, "NUCLEAR REACTORS", "MyObjectBuilder_Component/Reactor", reactCount, scan.CatTexts[2], scan.CatRatios[2], CatColor(reactCount, scan.ReactCur), catY + catIdx++ * catH);
                 if (engCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "HYDRO ENGINES", "IconHydrogen", engCount, CatValue(engCount, engCur, engMax), CatRatio(engCur, engMax), CatColor(engCount, engCur), catY + catIdx++ * catH);
+                    DrawCategoryRow(frame, "HYDRO ENGINES", "IconHydrogen", engCount, scan.CatTexts[3], scan.CatRatios[3], CatColor(engCount, scan.EngCur), catY + catIdx++ * catH);
 
                 float batListTop = catY + (catIdx + 0.2f) * catH;
                 float availH = Bottom - batListTop;
@@ -143,7 +135,7 @@ namespace DisplayApps
                     DrawDivider(frame, (batListTop) / S);
 
                     float rowTopStart = batListTop + 24f * S;
-                    int rows = DrawListGroup(frame, 0, $"INDIVIDUAL BATTERIES ({batCount})", scan.Batteries.Count,
+                    int rows = DrawListGroup(frame, 0, scan.BatHeader, scan.Batteries.Count,
                         batListTop + 6f * S, 18f * S, Bottom - rowTopStart, 40f * S, _drawBatteryRow);
 
                     if (!ConfigScroll && batCount > rows)
@@ -160,43 +152,74 @@ namespace DisplayApps
             for (int i = 0; i < TerminalBlocks.Count; i++)
             {
                 var b = TerminalBlocks[i];
-                if (b is Battery)
+                Battery bat = b as Battery;
+                if (bat != null)
                 {
-                    Battery bat = (Battery)b;
                     AccumulateBattery(ref scan.Bat, bat);
                     scan.BatCount++;
                     scan.Batteries.Add(bat);
-                    scan.BatteryNames.Add(Truncate(BlockName(bat), 20));
+                    continue;
                 }
-                else if (b is Solar)
+                Solar s = b as Solar;
+                if (s != null)
                 {
-                    Solar s = (Solar)b;
                     scan.SolarCur += (float)s.CurrentOutput;
                     scan.SolarMax += (float)s.MaxOutput;
                     scan.SolarCount++;
+                    continue;
                 }
-                else if (b is Wind)
+                Wind w = b as Wind;
+                if (w != null)
                 {
-                    Wind w = (Wind)b;
                     scan.WindCur += (float)w.CurrentOutput;
                     scan.WindMax += (float)w.MaxOutput;
                     scan.WindCount++;
+                    continue;
                 }
-                else if (b is Reactor)
+                Reactor r = b as Reactor;
+                if (r != null)
                 {
-                    Reactor r = (Reactor)b;
                     scan.ReactCur += (float)r.CurrentOutput;
                     scan.ReactMax += (float)r.MaxOutput;
                     scan.ReactCount++;
+                    continue;
                 }
-                else if (b is Engine)
+                Engine e = b as Engine;
+                if (e != null)
                 {
-                    Engine e = (Engine)b;
                     scan.EngCur += (float)e.CurrentOutput;
                     scan.EngMax += (float)e.MaxOutput;
                     scan.EngCount++;
                 }
             }
+
+            // Grid-wide strings - pure functions of the totals above.
+            float batStored = scan.Bat.Stored, batMaxStored = scan.Bat.Max;
+            float batMaxOut = scan.Bat.MaxOut;
+            float netBat = scan.Bat.NetFlow;
+            float batRatio = batMaxStored > 0f ? batStored / batMaxStored : 0f;
+            scan.StorageText = $"{batStored:0.00} / {batMaxStored:0.00} MWh ({batRatio * 100f:0}%)";
+
+            string flowLabel = "0.00 MW (IDLE)";
+            if (netBat > 0.001f)
+                flowLabel = $"+{netBat:0.00} MW IN ({FormatTimeHours((batMaxStored - batStored) / netBat)} TO FULL)";
+            else if (netBat < -0.001f)
+                flowLabel = $"{netBat:0.00} MW OUT ({FormatTimeHours(batStored / -netBat)} TO EMPTY)";
+            scan.FlowText = flowLabel;
+
+            scan.MinTimeText = "--";
+            if (batMaxOut > 0.001f && batMaxStored > 0.001f)
+                scan.MinTimeText = $"EMPTY {FormatTimeHours(batStored / batMaxOut)}   |   FULL {FormatTimeHours((batMaxStored - batStored) / batMaxOut)}";
+
+            scan.CatTexts[0] = CatValue(scan.SolarCount, scan.SolarCur, scan.SolarMax);
+            scan.CatRatios[0] = CatRatio(scan.SolarCur, scan.SolarMax);
+            scan.CatTexts[1] = CatValue(scan.WindCount, scan.WindCur, scan.WindMax);
+            scan.CatRatios[1] = CatRatio(scan.WindCur, scan.WindMax);
+            scan.CatTexts[2] = CatValue(scan.ReactCount, scan.ReactCur, scan.ReactMax);
+            scan.CatRatios[2] = CatRatio(scan.ReactCur, scan.ReactMax);
+            scan.CatTexts[3] = CatValue(scan.EngCount, scan.EngCur, scan.EngMax);
+            scan.CatRatios[3] = CatRatio(scan.EngCur, scan.EngMax);
+            scan.BatHeader = "INDIVIDUAL BATTERIES (" + scan.BatCount + ")";
             return scan;
         }
 
@@ -220,25 +243,33 @@ namespace DisplayApps
         void DrawBatteryRow(int idx, float rowTop)
         {
             Battery battery = _scan.Batteries[idx];
-            float ratio = (float)battery.MaxStoredPower > 0f ? (float)battery.CurrentStoredPower / (float)battery.MaxStoredPower : 0f;
+            // Interface property reads are virtual sync-var lookups - read each
+            // one once. Name resolution is lazy on purpose: only visible rows
+            // pay for the CustomName string.
+            float stored = (float)battery.CurrentStoredPower;
+            float maxStored = (float)battery.MaxStoredPower;
+            float curIn = (float)battery.CurrentInput;
+            float curOut = (float)battery.CurrentOutput;
+            bool charging = battery.IsCharging;
+            float ratio = maxStored > 0f ? stored / maxStored : 0f;
 
-            string name = _scan.BatteryNames[idx];
+            string name = Truncate(BlockName(battery), 20);
 
             string state;
             Color stateColor;
-            if (battery.IsCharging)
+            if (charging)
             {
-                state = $"CHARGING (+{battery.CurrentInput:0.00} MW)";
+                state = $"CHARGING (+{curIn:0.00} MW)";
                 stateColor = new Color(50, 210, 90);
             }
             else if (battery.ChargeMode == Sandbox.ModAPI.Ingame.ChargeMode.Recharge)
             {
-                state = $"RECHARGE (+{battery.CurrentInput:0.00} MW)";
+                state = $"RECHARGE (+{curIn:0.00} MW)";
                 stateColor = new Color(80, 200, 230);
             }
-            else if ((float)battery.CurrentOutput > 0.005f)
+            else if (curOut > 0.005f)
             {
-                state = $"DISCHARGING (-{battery.CurrentOutput:0.00} MW)";
+                state = $"DISCHARGING (-{curOut:0.00} MW)";
                 stateColor = new Color(230, 60, 50);
             }
             else
@@ -250,11 +281,11 @@ namespace DisplayApps
             AddText(_frame, name, new Vector2(Left, rowTop + 1f * S), 0.48f * S, FgColor, TextAlignment.LEFT);
             AddText(_frame, state, new Vector2(Right, rowTop + 1f * S), 0.44f * S, stateColor, TextAlignment.RIGHT);
 
-            string details = $"{battery.CurrentStoredPower:0.00} / {battery.MaxStoredPower:0.00} MWh ({ratio * 100f:0}%)";
+            string details = $"{stored:0.00} / {maxStored:0.00} MWh ({ratio * 100f:0}%)";
             AddText(_frame, details, new Vector2(Left, rowTop + 15f * S), 0.44f * S, new Color(170, 175, 185), TextAlignment.LEFT);
 
             RectangleF bar = new RectangleF(new Vector2(Left, rowTop + 29f * S), new Vector2(Right - Left, 6f * S));
-            DrawBar(_frame, bar, ratio, battery.IsCharging ? new Color(80, 200, 230) : BarColor(ratio));
+            DrawBar(_frame, bar, ratio, charging ? new Color(80, 200, 230) : BarColor(ratio));
         }
     }
 }

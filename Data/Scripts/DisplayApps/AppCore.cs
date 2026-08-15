@@ -7,12 +7,13 @@ using VRage.Game.GUI.TextPanel;
 using VRage.Game.ModAPI.Ingame;
 using VRage.Utils;
 using VRageMath;
+// (VRage.Game.ModAPI.Ingame also supplies the MyItemType.GetItemInfo extension)
 
 using MySurface = Sandbox.ModAPI.Ingame.IMyTextSurface;
 using MyCubeBlock = VRage.Game.ModAPI.Ingame.IMyCubeBlock;
 using MySlimBlock = VRage.Game.ModAPI.IMySlimBlock;
 using MyTerminalBlock = Sandbox.ModAPI.IMyTerminalBlock;
-using MyInventoryItem = VRage.Game.ModAPI.IMyInventoryItem;
+using MyInventoryItem = VRage.Game.ModAPI.Ingame.MyInventoryItem;
 
 namespace DisplayApps
 {
@@ -40,6 +41,9 @@ namespace DisplayApps
         VRage.Game.ModAPI.IMyCubeGrid _scanGrid;
         int _lastScanBlocks;
         string _lastCustomData;
+        string _perfAppName;
+        string _perfLabel;
+        string _perfLabelSource;
         string _configGroupsKey = "";
         readonly int[] ScrollPos = new int[4];
         readonly int[] ScrollShown = new int[4];
@@ -228,17 +232,21 @@ namespace DisplayApps
                 AppTerminalControls.EnsureRegistered(Block as MyTerminalBlock);
                 BgColor = Surface.ScriptBackgroundColor;
                 FgColor = Surface.ScriptForegroundColor;
-                var sw = Stopwatch.StartNew();
+                if (_perfAppName == null) _perfAppName = GetType().Name;
+                long t0 = Stopwatch.GetTimestamp();
                 LoadConfig();
                 RunApp();
-                sw.Stop();
-                double ms = sw.Elapsed.TotalMilliseconds;
-                string label;
+                double ms = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
                 MyTerminalBlock tb = Block as MyTerminalBlock;
-                label = (tb != null && tb.CustomName.Length > 0) ? tb.CustomName : "Block " + Block.EntityId;
-                Perf.Record(GetType().Name, GetType().Name + " [" + label + "]", ms, MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds);
+                string source = (tb != null && tb.CustomName.Length > 0) ? tb.CustomName : null;
+                if (_perfLabel == null || !string.Equals(source, _perfLabelSource, StringComparison.Ordinal))
+                {
+                    _perfLabelSource = source;
+                    _perfLabel = _perfAppName + " [" + (source ?? ("Block " + Block.EntityId)) + "]";
+                }
+                Perf.Record(_perfAppName, _perfLabel, ms, MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds);
                 if (ms > 50.0)
-                    MyLog.Default.WriteLine("DisplayApps " + GetType().Name + ": slow update " + ms.ToString("0.0") + " ms");
+                    MyLog.Default.WriteLine("DisplayApps " + _perfAppName + ": slow update " + ms.ToString("0.0") + " ms");
             }
             catch
             {
@@ -302,6 +310,21 @@ namespace DisplayApps
             _lastScanBlocks = TerminalBlocks.Count;
         }
 
+        /// <summary>Shared buffer for inventory item reads - the ingame
+        /// GetItems overload fills a caller-provided list of structs, so no
+        /// list or item objects are allocated per inventory per scan (the
+        /// ModAPI GetItems() builds a fresh list each call).</summary>
+        static readonly List<MyInventoryItem> _itemBuffer = new List<MyInventoryItem>(64);
+
+        /// <summary>Fills the shared item buffer with the inventory's items and
+        /// returns it. The buffer is reused - consume it before the next call.</summary>
+        protected static List<MyInventoryItem> FillItems(VRage.Game.ModAPI.IMyInventory inventory)
+        {
+            _itemBuffer.Clear();
+            if (inventory != null) inventory.GetItems(_itemBuffer, null);
+            return _itemBuffer;
+        }
+
         /// <summary>Iterates every inventory item on the given terminal blocks
         /// (gas tanks and blocks without inventories are skipped) and passes
         /// each item to onItem. Shared by all inventory-scanning apps so the
@@ -315,7 +338,7 @@ namespace DisplayApps
                 if (b.InventoryCount == 0) continue;
                 for (int inv = 0; inv < b.InventoryCount; inv++)
                 {
-                    var items = b.GetInventory(inv).GetItems();
+                    var items = FillItems(b.GetInventory(inv));
                     for (int k = 0; k < items.Count; k++)
                         onItem(items[k]);
                 }
@@ -363,7 +386,7 @@ namespace DisplayApps
                 return;
             }
 
-            var parsed = ParseConfigRegions(data);
+            var parsed = ParseConfigRegionsCached(data);
             foreach (var kv in parsed)
                 _regionValues[kv.Key] = kv.Value;
 
@@ -451,13 +474,31 @@ namespace DisplayApps
             return regions;
         }
 
+        /// <summary>One-entry parse memo: terminal control getters call
+        /// ReadConfigValue many times per GUI frame for the same block, so the
+        /// full CustomData parse only runs when the text actually changed
+        /// (WriteConfigValue always installs a new string instance).</summary>
+        static string _cfgCacheData;
+        static Dictionary<string, Dictionary<string, string>> _cfgCacheParsed;
+
+        static Dictionary<string, Dictionary<string, string>> ParseConfigRegionsCached(string data)
+        {
+            if (!ReferenceEquals(data, _cfgCacheData) &&
+                !string.Equals(data, _cfgCacheData, StringComparison.Ordinal))
+            {
+                _cfgCacheParsed = ParseConfigRegions(data);
+                _cfgCacheData = data;
+            }
+            return _cfgCacheParsed;
+        }
+
         /// <summary>Reads an option for the given app region (the app's own
         /// region first, then DEFAULT), used by the terminal controls to show
         /// the effective value in the block's options menu.</summary>
         public static string ReadConfigValue(MyTerminalBlock tb, string region, string key)
         {
             if (tb == null || string.IsNullOrEmpty(key)) return null;
-            var regions = ParseConfigRegions(tb.CustomData ?? "");
+            var regions = ParseConfigRegionsCached(tb.CustomData ?? "");
             Dictionary<string, string> dict;
             string value;
             if (!string.IsNullOrEmpty(region) && regions.TryGetValue(region, out dict) && dict.TryGetValue(key, out value))
@@ -475,6 +516,18 @@ namespace DisplayApps
         {
             if (tb == null || string.IsNullOrEmpty(region) || string.IsNullOrEmpty(key)) return;
             string data = tb.CustomData ?? "";
+
+            // No-op guard: skip the split/rebuild (and the CustomData sync it
+            // triggers in multiplayer) when the region already holds this value.
+            // Terminal setters fire per GUI frame, mostly with unchanged values.
+            var parsedRegions = ParseConfigRegionsCached(data);
+            Dictionary<string, string> regionDict;
+            string existing;
+            if (parsedRegions.TryGetValue(region, out regionDict) &&
+                regionDict.TryGetValue(key, out existing) &&
+                string.Equals(existing, value, StringComparison.Ordinal))
+                return;
+
             string[] lines = data.Split('\n');
 
             int regionStart = -1;
@@ -829,8 +882,27 @@ namespace DisplayApps
                 TerminalBlocks.Clear();
                 return;
             }
-            GridBlocks.RemoveAll(b => b.FatBlock == null || !_groupIds.Contains(b.FatBlock.EntityId));
-            TerminalBlocks.RemoveAll(b => !_groupIds.Contains(b.EntityId));
+            if (_slimGroupPred == null)
+            {
+                _slimGroupPred = SlimNotInGroups;
+                _termGroupPred = TermNotInGroups;
+            }
+            GridBlocks.RemoveAll(_slimGroupPred);
+            TerminalBlocks.RemoveAll(_termGroupPred);
+        }
+
+        Predicate<MySlimBlock> _slimGroupPred;
+        Predicate<MyTerminalBlock> _termGroupPred;
+
+        bool SlimNotInGroups(MySlimBlock b)
+        {
+            var fb = b.FatBlock;
+            return fb == null || !_groupIds.Contains(fb.EntityId);
+        }
+
+        bool TermNotInGroups(MyTerminalBlock b)
+        {
+            return !_groupIds.Contains(b.EntityId);
         }
 
         protected static string BlockName(VRage.Game.ModAPI.IMyCubeBlock block)
@@ -1089,18 +1161,6 @@ namespace DisplayApps
             return name;
         }
 
-        /// <summary>Zero-fills a "TypeId/Subtype"-keyed dictionary with every
-        /// known subtype that's missing, so FullList mode shows all types.</summary>
-        protected static void EnsureFullListEntries(Dictionary<string, float> target, List<string> known, string typeId)
-        {
-            string prefix = typeId + "/";
-            for (int i = 0; i < known.Count; i++)
-            {
-                string key = prefix + known[i];
-                if (!target.ContainsKey(key)) target[key] = 0f;
-            }
-        }
-
         /// <summary>Zero-fills a subtype-keyed dictionary with every known
         /// subtype that's missing, so FullList mode shows all types.</summary>
         protected static void EnsureFullListEntries(Dictionary<string, int> target, List<string> known)
@@ -1131,11 +1191,54 @@ namespace DisplayApps
             s.MaxOut += (float)b.MaxOutput;
         }
 
-        /// <summary>Item volume (L per unit) cached per "TypeId/Subtype" key.</summary>
-        protected static readonly Dictionary<string, float> ItemVolumeCache = new Dictionary<string, float>();
+        /// <summary>Per-unit volume/mass and category for one item type. The
+        /// definition lookup and the category string compares only run on the
+        /// first sighting of a type; the hot per-item path is a single
+        /// struct-keyed dictionary probe with no string work at all.</summary>
+        public struct ItemStats
+        {
+            public float Volume;
+            public float Mass;
+            public byte Category;
+        }
 
-        /// <summary>Item mass (kg per unit) cached per "TypeId/Subtype" key.</summary>
-        protected static readonly Dictionary<string, float> ItemMassCache = new Dictionary<string, float>();
+        public const byte CatOre = 0;
+        public const byte CatIngot = 1;
+        public const byte CatComponent = 2;
+        public const byte CatAmmo = 3;
+        public const byte CatTool = 4;
+        public const byte CatOther = 5;
+
+        static readonly Dictionary<VRage.Game.ModAPI.Ingame.MyItemType, ItemStats> _itemStatsCache =
+            new Dictionary<VRage.Game.ModAPI.Ingame.MyItemType, ItemStats>();
+
+        protected static ItemStats GetItemStats(VRage.Game.ModAPI.Ingame.MyItemType type)
+        {
+            ItemStats stats;
+            if (_itemStatsCache.TryGetValue(type, out stats)) return stats;
+            try
+            {
+                var info = type.GetItemInfo();
+                stats.Volume = info.Volume;
+                stats.Mass = info.Mass;
+            }
+            catch
+            {
+                stats.Volume = 0f;
+                stats.Mass = 0f;
+            }
+            string typeId = type.TypeId;
+            if (typeId == "MyObjectBuilder_Ore") stats.Category = CatOre;
+            else if (typeId == "MyObjectBuilder_Ingot") stats.Category = CatIngot;
+            else if (typeId == "MyObjectBuilder_Component") stats.Category = CatComponent;
+            else if (typeId == "MyObjectBuilder_AmmoMagazine") stats.Category = CatAmmo;
+            else if (typeId == "MyObjectBuilder_PhysicalGunObject"
+                || typeId == "MyObjectBuilder_OxygenContainerObject"
+                || typeId == "MyObjectBuilder_GasContainerObject") stats.Category = CatTool;
+            else stats.Category = CatOther;
+            _itemStatsCache[type] = stats;
+            return stats;
+        }
 
         static readonly Dictionary<MyStringHash, bool> _gasTypeCache = new Dictionary<MyStringHash, bool>();
 
@@ -1155,10 +1258,11 @@ namespace DisplayApps
         }
 
         /// <summary>True when the given gas tank block is a hydrogen tank
-        /// (else it is treated as an oxygen tank).</summary>
+        /// (else it is treated as an oxygen tank). BlockDefinition.SubtypeId
+        /// is already a string, so this is one hash lookup plus the cache.</summary>
         protected static bool IsHydrogenTank(Sandbox.ModAPI.IMyGasTank tank)
         {
-            return IsHydrogenTank(MyStringHash.GetOrCompute(tank.BlockDefinition.SubtypeId.ToString()));
+            return IsHydrogenTank(MyStringHash.GetOrCompute(tank.BlockDefinition.SubtypeId));
         }
 
         /// <summary>
@@ -1192,13 +1296,24 @@ namespace DisplayApps
 
             var map = ScanCache<T>.Map;
             CacheEntry<T> entry;
-            if (map.TryGetValue(key, out entry) && entry.Window == window)
-                return entry.Data;
+            if (map.TryGetValue(key, out entry))
+            {
+                if (entry.Window == window)
+                    return entry.Data;
+                // Stale entry for this key: recycle its container and entry
+                // BEFORE scanning, so the scan's RentScan reuses them instead
+                // of allocating fresh objects every window. Safe because all
+                // consumers refetch through GetGridScan at the start of each
+                // Run - no reference to the old window's data survives.
+                ScanCache<T>.Return(entry.Data);
+                ScanCache<T>.ReturnEntry(entry);
+                map.Remove(key);
+            }
 
-            var sw = Stopwatch.StartNew();
+            long t0 = Stopwatch.GetTimestamp();
             T data = scan();
-            sw.Stop();
-            Perf.RecordScan(GetType().Name, sw.Elapsed.TotalMilliseconds, _lastScanBlocks);
+            double scanMs = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
+            Perf.RecordScan(_perfAppName ?? GetType().Name, scanMs, _lastScanBlocks);
             map[key] = ScanCache<T>.RentEntry(window, data);
 
             if (map.Count > 64)
@@ -1227,6 +1342,17 @@ namespace DisplayApps
         protected T RentScan<T>() where T : class, new()
         {
             return ScanCache<T>.Rent();
+        }
+
+        /// <summary>EntityId of the grid the current scan targets (remote grid
+        /// when configured, else the display's own grid). 0 when unknown.</summary>
+        protected long ScanGridId
+        {
+            get
+            {
+                if (_scanGrid != null) return _scanGrid.EntityId;
+                return Block != null && Block.CubeGrid != null ? Block.CubeGrid.EntityId : 0;
+            }
         }
 
         /// <summary>Returns the grid to scan: the remote grid when RemoteGrid is
@@ -1354,6 +1480,13 @@ namespace DisplayApps
         public static readonly Dictionary<string, InstanceStat> Instances = new Dictionary<string, InstanceStat>();
         public static readonly List<SlowEvent> SlowEvents = new List<SlowEvent>();
 
+        /// <summary>Instances entries are keyed by app+CustomName, so renamed
+        /// or removed displays leave dead keys behind. Periodically drop
+        /// entries that stopped updating so the map stays bounded.</summary>
+        const double InstanceStaleMs = 300000.0;
+        static int _recordCounter;
+        static readonly List<string> _staleInstances = new List<string>();
+
         public static void Clear()
         {
             Stats.Clear();
@@ -1363,6 +1496,17 @@ namespace DisplayApps
 
         public static void Record(string app, string instance, double ms, double playMs)
         {
+            if (++_recordCounter >= 512)
+            {
+                _recordCounter = 0;
+                _staleInstances.Clear();
+                foreach (var kv in Instances)
+                    if (playMs - kv.Value.LastUpdateMs > InstanceStaleMs) _staleInstances.Add(kv.Key);
+                for (int i = 0; i < _staleInstances.Count; i++)
+                    Instances.Remove(_staleInstances[i]);
+                _staleInstances.Clear();
+            }
+
             PerfStat s = Stat(app);
             s.Count++;
             s.SumMs += ms;

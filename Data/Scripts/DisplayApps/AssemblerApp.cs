@@ -17,7 +17,9 @@ namespace DisplayApps
         {
             public string Subtype;
             public string Display;
+            public string Icon;
             public float Amount;
+            public string AmountText;
         }
 
         class AssemblerData
@@ -56,6 +58,7 @@ namespace DisplayApps
             public readonly List<AssemblerData> Assemblers = new List<AssemblerData>();
             readonly List<AssemblerData> _pool = new List<AssemblerData>();
             public int AsmCount, AssembleCount, DisassembleCount, QueueItems;
+            public string HeaderText, QueueText;
 
             public void Clear()
             {
@@ -66,6 +69,8 @@ namespace DisplayApps
                 AssembleCount = 0;
                 DisassembleCount = 0;
                 QueueItems = 0;
+                HeaderText = null;
+                QueueText = null;
             }
 
             public AssemblerData RentData()
@@ -79,6 +84,28 @@ namespace DisplayApps
                 return new AssemblerData();
             }
         }
+
+        sealed class NameComparer : IComparer<AssemblerData>
+        {
+            public static readonly NameComparer Instance = new NameComparer();
+            public int Compare(AssemblerData x, AssemblerData y)
+            {
+                return string.Compare(x.Name, y.Name, false);
+            }
+        }
+
+        /// <summary>Reused queue read buffer - the ingame GetQueue overload
+        /// fills it instead of allocating a copy per assembler per scan.</summary>
+        static readonly List<Sandbox.ModAPI.Ingame.MyProductionItem> _queueBuf = new List<Sandbox.ModAPI.Ingame.MyProductionItem>();
+
+        /// <summary>Reused subtype -> Items index map for the per-assembler
+        /// queue merge (was a fresh Dictionary + List per assembler).</summary>
+        static readonly Dictionary<string, int> _queueIndex = new Dictionary<string, int>();
+
+        /// <summary>Display name and sprite id per blueprint subtype - pure
+        /// functions of the subtype, resolved once for the session.</summary>
+        static readonly Dictionary<string, string> _displayCache = new Dictionary<string, string>();
+        static readonly Dictionary<string, string> _iconCache = new Dictionary<string, string>();
 
         readonly Func<AssemblerScan> _scanFunc;
 
@@ -97,11 +124,11 @@ namespace DisplayApps
                 if (GuardRemoteGrid(frame, scan)) return;
 
                 var assemblers = scan.Assemblers;
-                int asmCount = scan.AsmCount, assembleCount = scan.AssembleCount;
-                int disassembleCount = scan.DisassembleCount, queueItems = scan.QueueItems;
+                int asmCount = scan.AsmCount;
+                int queueItems = scan.QueueItems;
 
-                AddText(frame, $"ASSEMBLERS: {asmCount}   ({assembleCount} ASSEMBLING / {disassembleCount} DISASSEMBLING)", new Vector2(Left, 48f * S), 0.46f * S, asmCount > 0 ? new Color(50, 210, 90) : new Color(140, 145, 155), TextAlignment.LEFT);
-                AddText(frame, $"QUEUE: {queueItems} ITEM(S)", new Vector2(Right, 48f * S), 0.46f * S, queueItems > 0 ? FgColor : new Color(110, 115, 125), TextAlignment.RIGHT);
+                AddText(frame, scan.HeaderText, new Vector2(Left, 48f * S), 0.46f * S, asmCount > 0 ? new Color(50, 210, 90) : new Color(140, 145, 155), TextAlignment.LEFT);
+                AddText(frame, scan.QueueText, new Vector2(Right, 48f * S), 0.46f * S, queueItems > 0 ? FgColor : new Color(110, 115, 125), TextAlignment.RIGHT);
                 DrawDivider(frame, 60f);
 
                 if (asmCount == 0)
@@ -139,9 +166,9 @@ namespace DisplayApps
                         bool isCurrent = data.Producing && k == 0;
                         Color itemColor = isCurrent ? new Color(80, 230, 120) : FgColor;
                         Color amtColor = isCurrent ? new Color(80, 230, 120) : new Color(170, 175, 185);
-                        frame.Add(Icon(SpriteLookup.ForItem(entry.Subtype), new Vector2(Left + 10f * S, y + 5f * S), 16f * S, new Color(200, 210, 225)));
+                        frame.Add(Icon(entry.Icon, new Vector2(Left + 10f * S, y + 5f * S), 16f * S, new Color(200, 210, 225)));
                         AddText(frame, entry.Display, new Vector2(Left + 24f * S, y), 0.44f * S, itemColor, TextAlignment.LEFT);
-                        AddText(frame, $"x{entry.Amount:0.##}", new Vector2(Right, y), 0.44f * S, amtColor, TextAlignment.RIGHT);
+                        AddText(frame, entry.AmountText, new Vector2(Right, y), 0.44f * S, amtColor, TextAlignment.RIGHT);
 
                         y += 22f * S;
                     }
@@ -155,6 +182,28 @@ namespace DisplayApps
                     DrawMore(frame, $"+{remaining} MORE ASSEMBLER(S)");
                 }
             }
+        }
+
+        static string DisplayFor(string subtype)
+        {
+            string display;
+            if (!_displayCache.TryGetValue(subtype, out display))
+            {
+                display = subtype.Replace('_', ' ');
+                _displayCache[subtype] = display;
+            }
+            return display;
+        }
+
+        static string IconFor(string subtype)
+        {
+            string icon;
+            if (!_iconCache.TryGetValue(subtype, out icon))
+            {
+                icon = SpriteLookup.ForItem(subtype);
+                _iconCache[subtype] = icon;
+            }
+            return icon;
         }
 
         AssemblerScan ScanGrid()
@@ -175,30 +224,41 @@ namespace DisplayApps
                 data.Producing = a.IsProducing;
                 if (data.Assembling) scan.AssembleCount++; else scan.DisassembleCount++;
 
-                var queue = a.GetQueue();
-                var amounts = new Dictionary<string, float>();
-                var order = new List<string>();
-                for (int k = 0; k < queue.Count; k++)
+                _queueBuf.Clear();
+                a.GetQueue(_queueBuf);
+                _queueIndex.Clear();
+                for (int k = 0; k < _queueBuf.Count; k++)
                 {
-                    string subtype = queue[k].Blueprint.Id.SubtypeId.ToString();
-                    float amt = (float)queue[k].Amount;
-                    float cur;
-                    if (amounts.TryGetValue(subtype, out cur)) amounts[subtype] = cur + amt;
-                    else { amounts[subtype] = amt; order.Add(subtype); }
+                    string subtype = _queueBuf[k].BlueprintId.SubtypeId.ToString();
+                    float amt = (float)_queueBuf[k].Amount;
+                    int idx;
+                    if (_queueIndex.TryGetValue(subtype, out idx))
+                    {
+                        data.Items[idx].Amount += amt;
+                    }
+                    else
+                    {
+                        QueueEntry entry = data.RentEntry();
+                        entry.Subtype = subtype;
+                        entry.Display = DisplayFor(subtype);
+                        entry.Icon = IconFor(subtype);
+                        entry.Amount = amt;
+                        _queueIndex[subtype] = data.Items.Count;
+                        data.Items.Add(entry);
+                    }
                 }
-                foreach (var subtype in order)
+                for (int k = 0; k < data.Items.Count; k++)
                 {
-                    QueueEntry entry = data.RentEntry();
-                    entry.Subtype = subtype;
-                    entry.Display = subtype.Replace('_', ' ');
-                    entry.Amount = amounts[subtype];
-                    data.Items.Add(entry);
+                    QueueEntry entry = data.Items[k];
+                    entry.AmountText = "x" + entry.Amount.ToString("0.##");
                 }
                 scan.QueueItems += data.Items.Count;
                 scan.Assemblers.Add(data);
             }
 
-            scan.Assemblers.Sort((x, y) => string.Compare(x.Name, y.Name, false));
+            scan.Assemblers.Sort(NameComparer.Instance);
+            scan.HeaderText = "ASSEMBLERS: " + scan.AsmCount + "   (" + scan.AssembleCount + " ASSEMBLING / " + scan.DisassembleCount + " DISASSEMBLING)";
+            scan.QueueText = "QUEUE: " + scan.QueueItems + " ITEM(S)";
             return scan;
         }
     }

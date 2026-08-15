@@ -20,7 +20,53 @@ namespace DisplayApps
         static readonly List<KeyValuePair<string, InstanceStat>> _instBuffer = new List<KeyValuePair<string, InstanceStat>>();
         static readonly List<SlowEvent> _slowBuffer = new List<SlowEvent>();
 
-        static bool _prevPerfLog;
+        /// <summary>Shared text builder for the dump - reused across updates
+        /// so the buffer never re-grows past the first build.</summary>
+        static readonly StringBuilder _sb = new StringBuilder(8192);
+
+        /// <summary>Cap for the per-display section of the advanced dump. The
+        /// list is sorted worst-first, so the tail carries no information, and
+        /// without a cap the dump grows with every LCD in the world.</summary>
+        const int MaxInstanceRows = 30;
+
+        /// <summary>Text-tab refresh happens every Nth update - the Text tab
+        /// is a manual-inspection feature and each write is a synced, saved
+        /// surface property, so it does not need 1.67 s freshness.</summary>
+        const int TextRefreshEvery = 6;
+
+        sealed class StatMaxDesc : IComparer<KeyValuePair<string, PerfStat>>
+        {
+            public static readonly StatMaxDesc Instance = new StatMaxDesc();
+            public int Compare(KeyValuePair<string, PerfStat> a, KeyValuePair<string, PerfStat> b)
+            {
+                return b.Value.MaxMs.CompareTo(a.Value.MaxMs);
+            }
+        }
+
+        sealed class InstMaxDesc : IComparer<KeyValuePair<string, InstanceStat>>
+        {
+            public static readonly InstMaxDesc Instance = new InstMaxDesc();
+            public int Compare(KeyValuePair<string, InstanceStat> a, KeyValuePair<string, InstanceStat> b)
+            {
+                return b.Value.MaxMs.CompareTo(a.Value.MaxMs);
+            }
+        }
+
+        sealed class SlowDesc : IComparer<SlowEvent>
+        {
+            public static readonly SlowDesc Instance = new SlowDesc();
+            public int Compare(SlowEvent a, SlowEvent b)
+            {
+                return b.Ms.CompareTo(a.Ms);
+            }
+        }
+
+        // Per-display state: PerfLog is per-display config, so the transition
+        // tracking must be per instance - a static here made two PerfApp LCDs
+        // with different settings wipe the stats on every update.
+        bool _prevPerfLog;
+        int _textCooldown;
+        string _lastWritten;
 
         public PerfApp(MySurface surface, MyCubeBlock block, Vector2 size)
             : base(surface, block, size) { }
@@ -33,8 +79,28 @@ namespace DisplayApps
                 _prevPerfLog = ConfigPerfLog;
             }
 
-            string dump = ConfigPerfLog ? AdvancedText() : SimpleText();
-            Surface.WriteText(dump, false);
+            string dump = null;
+            if (Perf.Stats.Count > 0)
+            {
+                _statBuffer.Clear();
+                _statBuffer.AddRange(Perf.Stats);
+                _statBuffer.Sort(StatMaxDesc.Instance);
+
+                if (ConfigPerfLog)
+                {
+                    dump = AdvancedText();
+                    if (--_textCooldown <= 0)
+                    {
+                        _textCooldown = TextRefreshEvery;
+                        WriteTextIfChanged(dump);
+                    }
+                }
+                else if (--_textCooldown <= 0)
+                {
+                    _textCooldown = TextRefreshEvery;
+                    WriteTextIfChanged(SimpleText());
+                }
+            }
 
             using (var frame = BeginAppFrame("PERFORMANCE", "SCRIPT UPDATE TIMING (MS)", "IconSettings", new Color(140, 200, 230)))
             {
@@ -99,20 +165,16 @@ namespace DisplayApps
                 DrawDivider(frame, y2 / S);
                 y2 += 6f * S;
 
-                _statBuffer.Clear();
-                _statBuffer.AddRange(Perf.Stats);
-                _statBuffer.Sort((a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs));
-
                 for (int i = 0; i < _statBuffer.Count; i++)
                 {
                     if (y2 + 18f * S > Bottom) break;
                     PerfStat st = _statBuffer[i].Value;
-                    string name = _statBuffer[i].Key.Replace("App", "").ToUpperInvariant();
+                    string name = ShortName(_statBuffer[i].Key);
                     Color msColor = st.MaxMs > 5.0 ? new Color(230, 190, 60) : new Color(140, 210, 160);
 
                     AddText(frame, name, new Vector2(Left, y2), 0.44f * S, FgColor, TextAlignment.LEFT);
                     AddText(frame, st.Count.ToString(), new Vector2(Right - 260f * S, y2), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
-                    AddText(frame, $"{st.AvgMs:0.0}  {st.MaxMs:0.0}", new Vector2(Right - 130f * S, y2), 0.44f * S, msColor, TextAlignment.RIGHT);
+                    AddText(frame, st.AvgMs.ToString("0.0") + "  " + st.MaxMs.ToString("0.0"), new Vector2(Right - 130f * S, y2), 0.44f * S, msColor, TextAlignment.RIGHT);
                     AddText(frame, st.ScanAvgMs.ToString("0.0"), new Vector2(Right, y2), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
                     y2 += 18f * S;
                 }
@@ -121,6 +183,16 @@ namespace DisplayApps
                 if (y2 + 16f * S <= Bottom)
                     AddText(frame, "SCAN: EVERY UPDATE, SHARED PER GRID", new Vector2(Left, y2), 0.38f * S, new Color(110, 115, 125), TextAlignment.LEFT);
             }
+        }
+
+        /// <summary>Pushes the dump to the surface text only when it actually
+        /// changed - WriteText stores a synced, saved property, so identical
+        /// rewrites are pure network/save churn.</summary>
+        void WriteTextIfChanged(string dump)
+        {
+            if (string.Equals(dump, _lastWritten, StringComparison.Ordinal)) return;
+            _lastWritten = dump;
+            Surface.WriteText(dump, false);
         }
 
         static Color LineColor(string line)
@@ -133,28 +205,68 @@ namespace DisplayApps
 
         static readonly Color FgDefault = new Color(200, 205, 215);
 
+        /// <summary>"PowerApp" -> "POWER" etc., memoized - bounded by the
+        /// number of app types.</summary>
+        static readonly Dictionary<string, string> _shortNames = new Dictionary<string, string>();
+
+        static string ShortName(string key)
+        {
+            string n;
+            if (!_shortNames.TryGetValue(key, out n))
+            {
+                n = key.Replace("App", "").ToUpperInvariant();
+                _shortNames[key] = n;
+            }
+            return n;
+        }
+
+        /// <summary>Appends s left-aligned in a w-wide column (PadRight without
+        /// the intermediate string).</summary>
+        static void PadR(StringBuilder sb, string s, int w)
+        {
+            sb.Append(s);
+            if (s.Length < w) sb.Append(' ', w - s.Length);
+        }
+
+        /// <summary>Appends s right-aligned in a w-wide column (PadLeft without
+        /// the intermediate string).</summary>
+        static void PadL(StringBuilder sb, string s, int w)
+        {
+            if (s.Length < w) sb.Append(' ', w - s.Length);
+            sb.Append(s);
+        }
+
+        static void AppendHist(StringBuilder sb, int[] hist)
+        {
+            for (int i = 0; i < hist.Length; i++)
+            {
+                if (i > 0) sb.Append('/');
+                sb.Append(hist[i]);
+            }
+        }
+
         /// <summary>Copies the basic stats into the display's text content so
-        /// they can be copied from the block's terminal (Text tab).</summary>
+        /// they can be copied from the block's terminal (Text tab). Reads the
+        /// pre-sorted _statBuffer filled by RunApp.</summary>
         static string SimpleText()
         {
-            var sb = new StringBuilder();
+            var sb = _sb;
+            sb.Clear();
             sb.AppendLine("DISPLAYAPPS PERFORMANCE");
-            sb.AppendLine("PLAYTIME: " + MyAPIGateway.Session.ElapsedPlayTime.ToString(@"hh\:mm\:ss"));
+            sb.Append("PLAYTIME: ").AppendLine(MyAPIGateway.Session.ElapsedPlayTime.ToString(@"hh\:mm\:ss"));
             sb.AppendLine("NAME".PadRight(18) + "UPD".PadLeft(6) + "AVG".PadLeft(8) + "MAX".PadLeft(8) + "SCANS".PadLeft(7) + "SCN_AVG".PadLeft(9) + "SCN_MAX".PadLeft(9));
 
-            _statBuffer.Clear();
-            _statBuffer.AddRange(Perf.Stats);
-            _statBuffer.Sort((a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs));
             for (int i = 0; i < _statBuffer.Count; i++)
             {
                 PerfStat st = _statBuffer[i].Value;
-                sb.AppendLine(_statBuffer[i].Key.PadRight(18)
-                    + st.Count.ToString().PadLeft(6)
-                    + st.AvgMs.ToString("0.0").PadLeft(8)
-                    + st.MaxMs.ToString("0.0").PadLeft(8)
-                    + st.Scans.ToString().PadLeft(7)
-                    + st.ScanAvgMs.ToString("0.0").PadLeft(9)
-                    + st.ScanMaxMs.ToString("0.0").PadLeft(9));
+                PadR(sb, _statBuffer[i].Key, 18);
+                PadL(sb, st.Count.ToString(), 6);
+                PadL(sb, st.AvgMs.ToString("0.0"), 8);
+                PadL(sb, st.MaxMs.ToString("0.0"), 8);
+                PadL(sb, st.Scans.ToString(), 7);
+                PadL(sb, st.ScanAvgMs.ToString("0.0"), 9);
+                PadL(sb, st.ScanMaxMs.ToString("0.0"), 9);
+                sb.AppendLine();
             }
             sb.AppendLine("ALL TIMES IN MS PER UPDATE. SET PerfLog: true FOR FULL DATA.");
             return sb.ToString();
@@ -162,31 +274,31 @@ namespace DisplayApps
 
         /// <summary>Full advanced dump: histograms, update-interval jitter,
         /// scan cost per block, per-display breakdown and the slow update
-        /// list. Written to the display text every update.</summary>
+        /// list. Reads the pre-sorted _statBuffer filled by RunApp.</summary>
         static string AdvancedText()
         {
-            var sb = new StringBuilder();
+            var sb = _sb;
+            sb.Clear();
             sb.AppendLine("DISPLAYAPPS PERFORMANCE - ADVANCED");
-            sb.AppendLine("PLAYTIME: " + MyAPIGateway.Session.ElapsedPlayTime.ToString(@"hh\:mm\:ss"));
+            sb.Append("PLAYTIME: ").AppendLine(MyAPIGateway.Session.ElapsedPlayTime.ToString(@"hh\:mm\:ss"));
             sb.AppendLine();
 
             sb.AppendLine("== UPDATE TIMES (ms per update) ==");
             sb.AppendLine("APP".PadRight(16) + "UPD".PadLeft(6) + "AVG".PadLeft(8) + "MIN".PadLeft(8) + "MAX".PadLeft(8)
                 + "IV_AVG".PadLeft(9) + "IV_MAX".PadLeft(9) + "  HIST: <0.25/0.5/1/2/4/8/16/32/64/>64");
-            _statBuffer.Clear();
-            _statBuffer.AddRange(Perf.Stats);
-            _statBuffer.Sort((a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs));
             for (int i = 0; i < _statBuffer.Count; i++)
             {
                 PerfStat st = _statBuffer[i].Value;
-                sb.AppendLine(_statBuffer[i].Key.PadRight(16)
-                    + st.Count.ToString().PadLeft(6)
-                    + st.AvgMs.ToString("0.00").PadLeft(8)
-                    + (st.MinMs < double.MaxValue ? st.MinMs.ToString("0.00") : "--").PadLeft(8)
-                    + st.MaxMs.ToString("0.00").PadLeft(8)
-                    + st.IntervalAvgMs.ToString("0").PadLeft(9)
-                    + st.IntervalMaxMs.ToString("0").PadLeft(9)
-                    + "  " + HistString(st.Hist));
+                PadR(sb, _statBuffer[i].Key, 16);
+                PadL(sb, st.Count.ToString(), 6);
+                PadL(sb, st.AvgMs.ToString("0.00"), 8);
+                PadL(sb, st.MinMs < double.MaxValue ? st.MinMs.ToString("0.00") : "--", 8);
+                PadL(sb, st.MaxMs.ToString("0.00"), 8);
+                PadL(sb, st.IntervalAvgMs.ToString("0"), 9);
+                PadL(sb, st.IntervalMaxMs.ToString("0"), 9);
+                sb.Append("  ");
+                AppendHist(sb, st.Hist);
+                sb.AppendLine();
             }
             sb.AppendLine();
 
@@ -196,14 +308,16 @@ namespace DisplayApps
             for (int i = 0; i < _statBuffer.Count; i++)
             {
                 PerfStat st = _statBuffer[i].Value;
-                sb.AppendLine(_statBuffer[i].Key.PadRight(16)
-                    + st.Scans.ToString().PadLeft(6)
-                    + st.ScanAvgMs.ToString("0.00").PadLeft(8)
-                    + (st.ScanMinMs < double.MaxValue ? st.ScanMinMs.ToString("0.00") : "--").PadLeft(8)
-                    + st.ScanMaxMs.ToString("0.00").PadLeft(8)
-                    + st.AvgBlocks.ToString("0").PadLeft(10)
-                    + (st.PerBlockAvgMs * 1000.0).ToString("0.00").PadLeft(8)
-                    + "  " + HistString(st.ScanHist));
+                PadR(sb, _statBuffer[i].Key, 16);
+                PadL(sb, st.Scans.ToString(), 6);
+                PadL(sb, st.ScanAvgMs.ToString("0.00"), 8);
+                PadL(sb, st.ScanMinMs < double.MaxValue ? st.ScanMinMs.ToString("0.00") : "--", 8);
+                PadL(sb, st.ScanMaxMs.ToString("0.00"), 8);
+                PadL(sb, st.AvgBlocks.ToString("0"), 10);
+                PadL(sb, (st.PerBlockAvgMs * 1000.0).ToString("0.00"), 8);
+                sb.Append("  ");
+                AppendHist(sb, st.ScanHist);
+                sb.AppendLine();
             }
             sb.AppendLine();
 
@@ -212,26 +326,30 @@ namespace DisplayApps
                 + "IV_AVG".PadLeft(9) + "IV_MAX".PadLeft(9));
             _instBuffer.Clear();
             _instBuffer.AddRange(Perf.Instances);
-            _instBuffer.Sort((a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs));
-            for (int i = 0; i < _instBuffer.Count; i++)
+            _instBuffer.Sort(InstMaxDesc.Instance);
+            int shown = Math.Min(_instBuffer.Count, MaxInstanceRows);
+            for (int i = 0; i < shown; i++)
             {
                 InstanceStat s = _instBuffer[i].Value;
                 string label = _instBuffer[i].Key;
                 if (label.Length > 40) label = label.Substring(0, 40);
-                sb.AppendLine(label.PadRight(40)
-                    + s.Count.ToString().PadLeft(6)
-                    + s.AvgMs.ToString("0.00").PadLeft(8)
-                    + (s.MinMs < double.MaxValue ? s.MinMs.ToString("0.00") : "--").PadLeft(8)
-                    + s.MaxMs.ToString("0.00").PadLeft(8)
-                    + s.IntervalAvgMs.ToString("0").PadLeft(9)
-                    + s.IntervalMaxMs.ToString("0").PadLeft(9));
+                PadR(sb, label, 40);
+                PadL(sb, s.Count.ToString(), 6);
+                PadL(sb, s.AvgMs.ToString("0.00"), 8);
+                PadL(sb, s.MinMs < double.MaxValue ? s.MinMs.ToString("0.00") : "--", 8);
+                PadL(sb, s.MaxMs.ToString("0.00"), 8);
+                PadL(sb, s.IntervalAvgMs.ToString("0"), 9);
+                PadL(sb, s.IntervalMaxMs.ToString("0"), 9);
+                sb.AppendLine();
             }
+            if (_instBuffer.Count > shown)
+                sb.Append("... +").Append(_instBuffer.Count - shown).AppendLine(" MORE DISPLAYS");
             sb.AppendLine();
 
-            sb.AppendLine("== SLOW EVENTS (>= " + Perf.SlowMs.ToString("0") + "ms, worst " + Perf.SlowCap + ") ==");
+            sb.Append("== SLOW EVENTS (>= ").Append(Perf.SlowMs.ToString("0")).Append("ms, worst ").Append(Perf.SlowCap).AppendLine(") ==");
             _slowBuffer.Clear();
             _slowBuffer.AddRange(Perf.SlowEvents);
-            _slowBuffer.Sort((a, b) => b.Ms.CompareTo(a.Ms));
+            _slowBuffer.Sort(SlowDesc.Instance);
             if (_slowBuffer.Count == 0)
             {
                 sb.AppendLine("NONE");
@@ -241,11 +359,11 @@ namespace DisplayApps
                 sb.AppendLine("#".PadRight(4) + "APP".PadRight(16) + "MS".PadLeft(8) + "SCN_MS".PadLeft(8) + "  AT");
                 for (int i = 0; i < _slowBuffer.Count; i++)
                 {
-                    sb.AppendLine((i + 1).ToString().PadRight(4)
-                        + _slowBuffer[i].App.PadRight(16)
-                        + _slowBuffer[i].Ms.ToString("0.00").PadLeft(8)
-                        + _slowBuffer[i].ScanMs.ToString("0.00").PadLeft(8)
-                        + "  " + _slowBuffer[i].PlayTime + "  " + _slowBuffer[i].Instance);
+                    PadR(sb, (i + 1).ToString(), 4);
+                    PadR(sb, _slowBuffer[i].App, 16);
+                    PadL(sb, _slowBuffer[i].Ms.ToString("0.00"), 8);
+                    PadL(sb, _slowBuffer[i].ScanMs.ToString("0.00"), 8);
+                    sb.Append("  ").Append(_slowBuffer[i].PlayTime).Append("  ").AppendLine(_slowBuffer[i].Instance);
                 }
             }
             sb.AppendLine();
@@ -255,17 +373,6 @@ namespace DisplayApps
             sb.AppendLine("#   (~1.67s at 60 tps; shorter when the sim runs faster)");
             sb.AppendLine("# MS_1K = scan ms per 1000 scanned blocks");
             sb.AppendLine("# HIST buckets: <0.25, 0.25-0.5, 0.5-1, 1-2, 2-4, 4-8, 8-16, 16-32, 32-64, >64 ms");
-            return sb.ToString();
-        }
-
-        static string HistString(int[] hist)
-        {
-            var sb = new StringBuilder();
-            for (int i = 0; i < hist.Length; i++)
-            {
-                if (i > 0) sb.Append('/');
-                sb.Append(hist[i]);
-            }
             return sb.ToString();
         }
     }

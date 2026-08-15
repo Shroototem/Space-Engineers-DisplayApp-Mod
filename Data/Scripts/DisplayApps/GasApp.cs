@@ -29,11 +29,15 @@ namespace DisplayApps
         {
             public readonly List<GasRow> Tanks = new List<GasRow>();
             public readonly List<GasRow> Vents = new List<GasRow>();
-            public readonly List<GasRow> All = new List<GasRow>();
             readonly List<GasRow> _pool = new List<GasRow>();
             public float H2Stored, H2Max, O2Stored, O2Max, FarmOutput;
             public int FarmsProducing, GensOn, H2Count, O2Count, VentCount;
             public float VentLevel;
+
+            // Summary strings, built once per grid per window in the scan so
+            // every display draws them without formatting.
+            public string H2Text, O2Text, ProdText, VentText;
+            public string TotalHeader, TanksHeader, VentsHeader;
 
             public void Clear()
             {
@@ -41,7 +45,6 @@ namespace DisplayApps
                 _pool.AddRange(Vents);
                 Tanks.Clear();
                 Vents.Clear();
-                All.Clear();
                 H2Stored = 0f;
                 H2Max = 0f;
                 O2Stored = 0f;
@@ -53,6 +56,13 @@ namespace DisplayApps
                 O2Count = 0;
                 VentCount = 0;
                 VentLevel = 0f;
+                H2Text = null;
+                O2Text = null;
+                ProdText = null;
+                VentText = null;
+                TotalHeader = null;
+                TanksHeader = null;
+                VentsHeader = null;
             }
 
             public GasRow RentRow()
@@ -66,6 +76,10 @@ namespace DisplayApps
                 return new GasRow();
             }
         }
+
+        static readonly Color H2Color = new Color(80, 200, 230);
+        static readonly Color O2Color = new Color(90, 160, 255);
+        static readonly Color VentColor = new Color(50, 210, 90);
 
         readonly Func<GasScan> _scanFunc;
         MySpriteDrawFrame _frame;
@@ -86,19 +100,14 @@ namespace DisplayApps
             GasScan scan = GetGridScan(_scanFunc);
             _scan = scan;
 
-            using (var frame = BeginAppFrame("O2 / H2 STATUS", "LIFE SUPPORT & FUEL MONITOR", "IconOxygen", new Color(90, 160, 255)))
+            using (var frame = BeginAppFrame("O2 / H2 STATUS", "LIFE SUPPORT & FUEL MONITOR", "IconOxygen", O2Color))
             {
                 _frame = frame;
                 if (GuardRemoteGrid(frame, scan)) return;
 
-                float h2Stored = scan.H2Stored, h2Max = scan.H2Max;
-                float o2Stored = scan.O2Stored, o2Max = scan.O2Max;
-                float farmOutput = scan.FarmOutput;
                 int farmsProducing = scan.FarmsProducing, gensOn = scan.GensOn;
                 int h2Count = scan.H2Count, o2Count = scan.O2Count, ventCount = scan.VentCount;
-                float ventLevel = scan.VentLevel;
-
-                float avgVent = ventCount > 0 ? ventLevel / ventCount : 0f;
+                float avgVent = ventCount > 0 ? scan.VentLevel / ventCount : 0f;
 
                 if (h2Count + o2Count + ventCount + farmsProducing + gensOn == 0)
                 {
@@ -106,32 +115,29 @@ namespace DisplayApps
                     return;
                 }
 
-                float h2Ratio = h2Max > 0f ? h2Stored / h2Max : 0f;
+                float h2Ratio = scan.H2Max > 0f ? scan.H2Stored / scan.H2Max : 0f;
                 AddText(frame, "HYDROGEN STORAGE", new Vector2(Left, 52f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, $"{FormatVolume(h2Stored)} / {FormatVolume(h2Max)} ({h2Ratio * 100f:0}%)", new Vector2(Right, 52f * S), 0.50f * S, new Color(80, 200, 230), TextAlignment.RIGHT);
+                AddText(frame, scan.H2Text, new Vector2(Right, 52f * S), 0.50f * S, H2Color, TextAlignment.RIGHT);
 
                 RectangleF h2Bar = new RectangleF(new Vector2(Left, 68f * S), new Vector2(Right - Left, 14f * S));
-                DrawBar(frame, h2Bar, h2Ratio, new Color(80, 200, 230));
+                DrawBar(frame, h2Bar, h2Ratio, H2Color);
 
-                float o2Ratio = o2Max > 0f ? o2Stored / o2Max : 0f;
+                float o2Ratio = scan.O2Max > 0f ? scan.O2Stored / scan.O2Max : 0f;
                 AddText(frame, "OXYGEN STORAGE", new Vector2(Left, 88f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, $"{FormatVolume(o2Stored)} / {FormatVolume(o2Max)} ({o2Ratio * 100f:0}%)", new Vector2(Right, 88f * S), 0.50f * S, new Color(90, 160, 255), TextAlignment.RIGHT);
+                AddText(frame, scan.O2Text, new Vector2(Right, 88f * S), 0.50f * S, O2Color, TextAlignment.RIGHT);
 
                 RectangleF o2Bar = new RectangleF(new Vector2(Left, 104f * S), new Vector2(Right - Left, 14f * S));
-                DrawBar(frame, o2Bar, o2Ratio, new Color(90, 160, 255));
+                DrawBar(frame, o2Bar, o2Ratio, O2Color);
 
                 DrawDivider(frame, 126f);
                 AddText(frame, "OXYGEN PRODUCTION", new Vector2(Left, 132f * S), 0.48f * S, new Color(180, 190, 205), TextAlignment.LEFT);
 
-                string genText = gensOn > 0 ? $"GENERATORS: {gensOn} ACTIVE" : "GENERATORS: NONE";
-                AddText(frame, $"FARM: {farmOutput:0.0} L/s   |   {genText}", new Vector2(Left, 148f * S), 0.46f * S, farmsProducing > 0 || gensOn > 0 ? new Color(50, 210, 90) : new Color(140, 145, 155), TextAlignment.LEFT);
+                AddText(frame, scan.ProdText, new Vector2(Left, 148f * S), 0.46f * S, farmsProducing > 0 || gensOn > 0 ? new Color(50, 210, 90) : new Color(140, 145, 155), TextAlignment.LEFT);
 
-                string ventText = ventCount > 0 ? $"AVG ROOM O2: {avgVent * 100f:0}%" : "AIR VENTS: NONE";
-                AddText(frame, $"AIR VENTS: {ventCount}   |   {ventText}", new Vector2(Left, 164f * S), 0.46f * S, avgVent > 0.5f ? new Color(50, 210, 90) : (avgVent > 0.2f ? new Color(230, 200, 60) : new Color(220, 70, 60)), TextAlignment.LEFT);
+                AddText(frame, scan.VentText, new Vector2(Left, 164f * S), 0.46f * S, avgVent > 0.5f ? new Color(50, 210, 90) : (avgVent > 0.2f ? new Color(230, 200, 60) : new Color(220, 70, 60)), TextAlignment.LEFT);
 
                 DrawDivider(frame, 184f);
-                int totalRows = h2Count + o2Count + ventCount;
-                AddText(frame, $"GAS TANKS & VENTS ({totalRows})", new Vector2(Left, 190f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                AddText(frame, scan.TotalHeader, new Vector2(Left, 190f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
 
                 float rowsTop = 210f * S;
                 float rowH = 36f * S;
@@ -144,11 +150,11 @@ namespace DisplayApps
                     float gap = 8f * S;
                     float groupH = ListGroupHeight(Bottom - rowsTop, 2, headerH, gap);
 
-                    DrawListGroup(frame, 0, $"GAS TANKS ({tanks.Count})", tanks.Count, rowsTop, headerH, groupH, rowH, _drawTankRow);
+                    DrawListGroup(frame, 0, scan.TanksHeader, tanks.Count, rowsTop, headerH, groupH, rowH, _drawTankRow);
 
                     DrawDivider(frame, (rowsTop + headerH + groupH + gap / 2f) / S);
 
-                    DrawListGroup(frame, 1, $"AIR VENTS ({vents.Count})", vents.Count,
+                    DrawListGroup(frame, 1, scan.VentsHeader, vents.Count,
                         ListGroupTop(rowsTop, 1, groupH, headerH, gap), headerH, groupH, rowH, _drawVentRow);
                 }
                 else
@@ -156,15 +162,17 @@ namespace DisplayApps
                     int maxRows = Math.Max(0, (int)((Bottom - rowsTop) / rowH));
                     if (maxRows > 0)
                     {
+                        int totalRows = tanks.Count + vents.Count;
                         int drawn = 0;
-                        int startIndex = ScrollStart(0, scan.All.Count, maxRows);
-                        for (int i = startIndex; i < scan.All.Count && drawn < maxRows; i++)
+                        int startIndex = ScrollStart(0, totalRows, maxRows);
+                        for (int i = startIndex; i < totalRows && drawn < maxRows; i++)
                         {
-                            DrawRow(frame, scan.All[i], rowsTop + drawn++ * rowH);
+                            GasRow r = i < tanks.Count ? tanks[i] : vents[i - tanks.Count];
+                            DrawRow(frame, r, rowsTop + drawn++ * rowH);
                         }
 
-                        if (scan.All.Count > drawn)
-                            DrawMore(frame, $"+{scan.All.Count - drawn} MORE");
+                        if (totalRows > drawn)
+                            DrawMore(frame, $"+{totalRows - drawn} MORE");
                     }
                 }
             }
@@ -178,9 +186,9 @@ namespace DisplayApps
             for (int i = 0; i < TerminalBlocks.Count; i++)
             {
                 var b = TerminalBlocks[i];
-                if (b is GasTank)
+                GasTank t = b as GasTank;
+                if (t != null)
                 {
-                    GasTank t = (GasTank)b;
                     float cap = (float)t.Capacity;
                     float fill = (float)t.FilledRatio;
                     bool isH2 = IsHydrogenTank(t);
@@ -202,40 +210,56 @@ namespace DisplayApps
                     r.Ratio = fill;
                     r.Value = $"{FormatVolume(cap * fill)} ({fill * 100f:0}%)";
                     r.Icon = isH2 ? "IconHydrogen" : "IconOxygen";
-                    r.BarColor = isH2 ? new Color(80, 200, 230) : new Color(90, 160, 255);
+                    r.BarColor = isH2 ? H2Color : O2Color;
                     scan.Tanks.Add(r);
+                    continue;
                 }
-                else if (b is OxygenFarm)
+
+                OxygenFarm f = b as OxygenFarm;
+                if (f != null)
                 {
-                    OxygenFarm f = (OxygenFarm)b;
                     if (f.IsWorking)
                     {
                         scan.FarmOutput += (float)f.GetOutput();
                         if (f.CanProduce) scan.FarmsProducing++;
                     }
+                    continue;
                 }
-                else if (b is AirVent)
+
+                AirVent v = b as AirVent;
+                if (v != null)
                 {
-                    AirVent v = (AirVent)b;
-                    scan.VentLevel += (float)v.GetOxygenLevel();
+                    float lvl = (float)v.GetOxygenLevel();
+                    scan.VentLevel += lvl;
                     scan.VentCount++;
 
                     GasRow r = scan.RentRow();
                     r.Name = Truncate(BlockName(v), 22);
-                    r.Ratio = (float)v.GetOxygenLevel();
-                    r.Value = $"O2 LEVEL {r.Ratio * 100f:0}%";
+                    r.Ratio = lvl;
+                    r.Value = $"O2 LEVEL {lvl * 100f:0}%";
                     r.Icon = "IconOxygen";
-                    r.BarColor = new Color(50, 210, 90);
+                    r.BarColor = VentColor;
                     scan.Vents.Add(r);
+                    continue;
                 }
-                else if (b is GasGenerator)
-                {
-                    GasGenerator g = (GasGenerator)b;
-                    if (g.IsProducing) scan.GensOn++;
-                }
+
+                GasGenerator g = b as GasGenerator;
+                if (g != null && g.IsProducing) scan.GensOn++;
             }
-            scan.All.AddRange(scan.Tanks);
-            scan.All.AddRange(scan.Vents);
+
+            // Summary strings - pure functions of the totals above.
+            float h2Ratio2 = scan.H2Max > 0f ? scan.H2Stored / scan.H2Max : 0f;
+            float o2Ratio2 = scan.O2Max > 0f ? scan.O2Stored / scan.O2Max : 0f;
+            scan.H2Text = $"{FormatVolume(scan.H2Stored)} / {FormatVolume(scan.H2Max)} ({h2Ratio2 * 100f:0}%)";
+            scan.O2Text = $"{FormatVolume(scan.O2Stored)} / {FormatVolume(scan.O2Max)} ({o2Ratio2 * 100f:0}%)";
+            string genText = scan.GensOn > 0 ? $"GENERATORS: {scan.GensOn} ACTIVE" : "GENERATORS: NONE";
+            scan.ProdText = $"FARM: {scan.FarmOutput:0.0} L/s   |   {genText}";
+            float avgVent2 = scan.VentCount > 0 ? scan.VentLevel / scan.VentCount : 0f;
+            string ventText = scan.VentCount > 0 ? $"AVG ROOM O2: {avgVent2 * 100f:0}%" : "AIR VENTS: NONE";
+            scan.VentText = $"AIR VENTS: {scan.VentCount}   |   {ventText}";
+            scan.TotalHeader = "GAS TANKS & VENTS (" + (scan.H2Count + scan.O2Count + scan.VentCount) + ")";
+            scan.TanksHeader = "GAS TANKS (" + scan.Tanks.Count + ")";
+            scan.VentsHeader = "AIR VENTS (" + scan.Vents.Count + ")";
             return scan;
         }
 

@@ -2,14 +2,13 @@ using System;
 using System.Collections.Generic;
 using Sandbox.Game.GameSystems.TextSurfaceScripts;
 using VRage.Game.GUI.TextPanel;
-using VRage.Game.ModAPI.Ingame;
 using VRageMath;
 
 using MySurface = Sandbox.ModAPI.Ingame.IMyTextSurface;
 using MyCubeBlock = VRage.Game.ModAPI.Ingame.IMyCubeBlock;
 using MyTerminalBlock = Sandbox.ModAPI.IMyTerminalBlock;
 using MyInventory = VRage.Game.ModAPI.IMyInventory;
-using MyInventoryItem = VRage.Game.ModAPI.IMyInventoryItem;
+using MyInventoryItem = VRage.Game.ModAPI.Ingame.MyInventoryItem;
 
 namespace DisplayApps
 {
@@ -19,6 +18,7 @@ namespace DisplayApps
         class ContainerRow
         {
             public string Name;
+            public string Value;
             public float Vol;
             public float Mass;
             public float Ratio;
@@ -32,6 +32,13 @@ namespace DisplayApps
             public float OreVol, IngotVol, CompVol, AmmoVol, ToolVol, OtherVol;
             public float OreMass, IngotMass, CompMass, AmmoMass, ToolMass, OtherMass;
             public int OreCount, IngotCount, CompCount, AmmoCount, ToolCount, OtherCount;
+
+            // Display strings and ratios, built once per grid per window in
+            // the scan so every display draws without formatting.
+            public string TotalText, MassText, ContainersHeader;
+            public float VolRatio;
+            public readonly string[] CatTexts = new string[6];
+            public readonly float[] CatRatios = new float[6];
 
             public void Clear()
             {
@@ -58,6 +65,15 @@ namespace DisplayApps
                 AmmoCount = 0;
                 ToolCount = 0;
                 OtherCount = 0;
+                TotalText = null;
+                MassText = null;
+                ContainersHeader = null;
+                VolRatio = 0f;
+                for (int i = 0; i < CatTexts.Length; i++)
+                {
+                    CatTexts[i] = null;
+                    CatRatios[i] = 0f;
+                }
             }
 
             public ContainerRow RentRow()
@@ -72,16 +88,16 @@ namespace DisplayApps
             }
         }
 
-        const string OreType = "MyObjectBuilder_Ore";
-        const string IngotType = "MyObjectBuilder_Ingot";
-        const string CompType = "MyObjectBuilder_Component";
-        const string AmmoType = "MyObjectBuilder_AmmoMagazine";
-        const string GunType = "MyObjectBuilder_PhysicalGunObject";
-        const string O2Type = "MyObjectBuilder_OxygenContainerObject";
-        const string H2Type = "MyObjectBuilder_GasContainerObject";
+        sealed class RatioDesc : IComparer<ContainerRow>
+        {
+            public static readonly RatioDesc Instance = new RatioDesc();
+            public int Compare(ContainerRow a, ContainerRow b)
+            {
+                return b.Ratio.CompareTo(a.Ratio);
+            }
+        }
 
         readonly Func<StorageScan> _scanFunc;
-        readonly Action<MyInventoryItem> _onItem;
         MySpriteDrawFrame _frame;
         StorageScan _scan;
         readonly Action<int, float> _drawContainerRow;
@@ -90,7 +106,6 @@ namespace DisplayApps
             : base(surface, block, size)
         {
             _scanFunc = ScanGrid;
-            _onItem = OnItem;
             _drawContainerRow = DrawContainerRow;
         }
 
@@ -104,18 +119,7 @@ namespace DisplayApps
                 _frame = frame;
                 if (GuardRemoteGrid(frame, scan)) return;
 
-                float totalVol = scan.TotalVol, totalMax = scan.TotalMax, totalMass = scan.TotalMass;
-                float oreVol = scan.OreVol, ingotVol = scan.IngotVol, compVol = scan.CompVol;
-                float ammoVol = scan.AmmoVol, toolVol = scan.ToolVol, otherVol = scan.OtherVol;
-                float oreMass = scan.OreMass, ingotMass = scan.IngotMass, compMass = scan.CompMass;
-                float ammoMass = scan.AmmoMass, toolMass = scan.ToolMass, otherMass = scan.OtherMass;
-                int oreCount = scan.OreCount, ingotCount = scan.IngotCount, compCount = scan.CompCount;
-                int ammoCount = scan.AmmoCount, toolCount = scan.ToolCount, otherCount = scan.OtherCount;
                 var containers = scan.Containers;
-
-                float volRatio = totalMax > 0f ? totalVol / totalMax : 0f;
-                float totalMatVol = oreVol + ingotVol + compVol + ammoVol + toolVol + otherVol;
-                float totalMatMass = oreMass + ingotMass + compMass + ammoMass + toolMass + otherMass;
 
                 if (containers.Count == 0)
                 {
@@ -124,13 +128,13 @@ namespace DisplayApps
                 }
 
                 AddText(frame, "TOTAL STORAGE", new Vector2(Left, 52f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, $"{FormatVolume(totalVol)} / {FormatVolume(totalMax)} ({volRatio * 100f:0}%)", new Vector2(Right, 52f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                AddText(frame, scan.TotalText, new Vector2(Right, 52f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
 
                 RectangleF volBar = new RectangleF(new Vector2(Left, 68f * S), new Vector2(Right - Left, 14f * S));
-                DrawBar(frame, volBar, volRatio, BarColor(volRatio));
+                DrawBar(frame, volBar, scan.VolRatio, BarColor(scan.VolRatio));
 
                 AddText(frame, "TOTAL MASS", new Vector2(Left, 88f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, FormatMass(totalMass), new Vector2(Right, 88f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                AddText(frame, scan.MassText, new Vector2(Right, 88f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
 
                 DrawDivider(frame, 126f);
                 AddText(frame, "MATERIAL BREAKDOWN", new Vector2(Left, 132f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
@@ -139,23 +143,23 @@ namespace DisplayApps
                 float catH = 26f * S;
 
                 int catIdx = 0;
-                if (oreCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "ORES", "MyObjectBuilder_Ore/Iron", oreCount, CatValue(oreVol, oreMass, totalMatVol, totalMatMass, oreCount), CatRatio(oreVol, oreMass, totalMatVol, totalMatMass), CatColor(oreCount), catY + catIdx++ * catH);
-                if (ingotCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "INGOTS", "MyObjectBuilder_Ingot/Iron", ingotCount, CatValue(ingotVol, ingotMass, totalMatVol, totalMatMass, ingotCount), CatRatio(ingotVol, ingotMass, totalMatVol, totalMatMass), CatColor(ingotCount), catY + catIdx++ * catH);
-                if (compCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "COMPONENTS", "MyObjectBuilder_Component/SteelPlate", compCount, CatValue(compVol, compMass, totalMatVol, totalMatMass, compCount), CatRatio(compVol, compMass, totalMatVol, totalMatMass), CatColor(compCount), catY + catIdx++ * catH);
-                if (ammoCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "AMMO", "MyObjectBuilder_AmmoMagazine/NATO_5p56x45mm", ammoCount, CatValue(ammoVol, ammoMass, totalMatVol, totalMatMass, ammoCount), CatRatio(ammoVol, ammoMass, totalMatVol, totalMatMass), CatColor(ammoCount), catY + catIdx++ * catH);
-                if (toolCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "TOOLS & CANISTERS", "MyObjectBuilder_PhysicalGunObject/HandDrillItem", toolCount, CatValue(toolVol, toolMass, totalMatVol, totalMatMass, toolCount), CatRatio(toolVol, toolMass, totalMatVol, totalMatMass), CatColor(toolCount), catY + catIdx++ * catH);
-                if (otherCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "OTHER", "MyObjectBuilder_Component/SmallTube", otherCount, CatValue(otherVol, otherMass, totalMatVol, totalMatMass, otherCount), CatRatio(otherVol, otherMass, totalMatVol, totalMatMass), CatColor(otherCount), catY + catIdx++ * catH);
+                if (scan.OreCount > 0 || ConfigFullList)
+                    DrawCategoryRow(frame, "ORES", "MyObjectBuilder_Ore/Iron", scan.OreCount, scan.CatTexts[0], scan.CatRatios[0], CatColor(scan.OreCount), catY + catIdx++ * catH);
+                if (scan.IngotCount > 0 || ConfigFullList)
+                    DrawCategoryRow(frame, "INGOTS", "MyObjectBuilder_Ingot/Iron", scan.IngotCount, scan.CatTexts[1], scan.CatRatios[1], CatColor(scan.IngotCount), catY + catIdx++ * catH);
+                if (scan.CompCount > 0 || ConfigFullList)
+                    DrawCategoryRow(frame, "COMPONENTS", "MyObjectBuilder_Component/SteelPlate", scan.CompCount, scan.CatTexts[2], scan.CatRatios[2], CatColor(scan.CompCount), catY + catIdx++ * catH);
+                if (scan.AmmoCount > 0 || ConfigFullList)
+                    DrawCategoryRow(frame, "AMMO", "MyObjectBuilder_AmmoMagazine/NATO_5p56x45mm", scan.AmmoCount, scan.CatTexts[3], scan.CatRatios[3], CatColor(scan.AmmoCount), catY + catIdx++ * catH);
+                if (scan.ToolCount > 0 || ConfigFullList)
+                    DrawCategoryRow(frame, "TOOLS & CANISTERS", "MyObjectBuilder_PhysicalGunObject/HandDrillItem", scan.ToolCount, scan.CatTexts[4], scan.CatRatios[4], CatColor(scan.ToolCount), catY + catIdx++ * catH);
+                if (scan.OtherCount > 0 || ConfigFullList)
+                    DrawCategoryRow(frame, "OTHER", "MyObjectBuilder_Component/SmallTube", scan.OtherCount, scan.CatTexts[5], scan.CatRatios[5], CatColor(scan.OtherCount), catY + catIdx++ * catH);
 
                 float listY = catY + (catIdx + 0.2f) * catH;
                 DrawDivider(frame, (listY) / S);
                 float rowsTop = listY + 24f * S;
-                int rows = DrawListGroup(frame, 0, $"CONTAINERS ({containers.Count})", containers.Count,
+                int rows = DrawListGroup(frame, 0, scan.ContainersHeader, containers.Count,
                     listY + 6f * S, 18f * S, Bottom - rowsTop, 32f * S, _drawContainerRow);
 
                 if (!ConfigScroll && containers.Count > rows)
@@ -163,23 +167,20 @@ namespace DisplayApps
             }
         }
 
-        string CatValue(float vol, float mass, float totalVol, float totalMass, int count)
-        {
-            if (count == 0) return "EMPTY";
-            float ratio = CatRatio(vol, mass, totalVol, totalMass);
-            return $"{FormatStorage(vol, mass)} ({ratio * 100f:0}%)";
-        }
-
-        float CatRatio(float vol, float mass, float totalVol, float totalMass)
-        {
-            if (ConfigStorageType == 2)
-                return totalMass > 0f ? mass / totalMass : 0f;
-            return totalVol > 0f ? vol / totalVol : 0f;
-        }
-
         static Color CatColor(int count)
         {
             return count > 0 ? new Color(200, 180, 80) : new Color(80, 85, 95);
+        }
+
+        void FillCat(StorageScan scan, int idx, float vol, float mass, int count, float totalVol, float totalMass)
+        {
+            float ratio = ConfigStorageType == 2
+                ? (totalMass > 0f ? mass / totalMass : 0f)
+                : (totalVol > 0f ? vol / totalVol : 0f);
+            scan.CatRatios[idx] = ratio;
+            scan.CatTexts[idx] = count == 0
+                ? "EMPTY"
+                : FormatStorage(vol, mass) + " (" + (ratio * 100f).ToString("0") + "%)";
         }
 
         StorageScan ScanGrid()
@@ -209,57 +210,63 @@ namespace DisplayApps
                     cVol += cv;
                     cMax += mv;
                     cMass += cm;
+
+                    // Item pass shares this traversal - one GetInventory per
+                    // inventory instead of a second full block walk.
+                    var items = FillItems(inventory);
+                    for (int k = 0; k < items.Count; k++)
+                        OnItem(items[k]);
                 }
                 ContainerRow row = scan.RentRow();
                 row.Name = Truncate(BlockName(tb), 22);
                 row.Vol = cVol;
                 row.Mass = cMass;
                 row.Ratio = cMax > 0f ? cVol / cMax : 0f;
+                row.Value = FormatStorage(cVol, cMass) + " (" + (row.Ratio * 100f).ToString("0") + "%)";
                 scan.Containers.Add(row);
             }
-            ForEachItem(TerminalBlocks, _onItem);
 
-            scan.Containers.Sort((a, b) => b.Ratio.CompareTo(a.Ratio));
+            scan.Containers.Sort(RatioDesc.Instance);
+
+            // Display strings - pure functions of the totals above.
+            float totalMatVol = scan.OreVol + scan.IngotVol + scan.CompVol + scan.AmmoVol + scan.ToolVol + scan.OtherVol;
+            float totalMatMass = scan.OreMass + scan.IngotMass + scan.CompMass + scan.AmmoMass + scan.ToolMass + scan.OtherMass;
+            scan.VolRatio = scan.TotalMax > 0f ? scan.TotalVol / scan.TotalMax : 0f;
+            scan.TotalText = FormatVolume(scan.TotalVol) + " / " + FormatVolume(scan.TotalMax) + " (" + (scan.VolRatio * 100f).ToString("0") + "%)";
+            scan.MassText = FormatMass(scan.TotalMass);
+            scan.ContainersHeader = "CONTAINERS (" + scan.Containers.Count + ")";
+            FillCat(scan, 0, scan.OreVol, scan.OreMass, scan.OreCount, totalMatVol, totalMatMass);
+            FillCat(scan, 1, scan.IngotVol, scan.IngotMass, scan.IngotCount, totalMatVol, totalMatMass);
+            FillCat(scan, 2, scan.CompVol, scan.CompMass, scan.CompCount, totalMatVol, totalMatMass);
+            FillCat(scan, 3, scan.AmmoVol, scan.AmmoMass, scan.AmmoCount, totalMatVol, totalMatMass);
+            FillCat(scan, 4, scan.ToolVol, scan.ToolMass, scan.ToolCount, totalMatVol, totalMatMass);
+            FillCat(scan, 5, scan.OtherVol, scan.OtherMass, scan.OtherCount, totalMatVol, totalMatMass);
             return scan;
         }
 
         void OnItem(MyInventoryItem item)
         {
-            var content = item.Content;
-            if (content == null) return;
-            string typeId = content.TypeId.ToString();
-            string subtype = content.SubtypeName;
-            string key = typeId + "/" + subtype;
-
-            float itemVol;
-            if (!ItemVolumeCache.TryGetValue(key, out itemVol))
-            {
-                try { itemVol = (float)new MyItemType(typeId, subtype).GetItemInfo().Volume; } catch { itemVol = 0f; }
-                ItemVolumeCache[key] = itemVol;
-            }
-            float itemMass;
-            if (!ItemMassCache.TryGetValue(key, out itemMass))
-            {
-                try { itemMass = (float)new MyItemType(typeId, subtype).GetItemInfo().Mass; } catch { itemMass = 0f; }
-                ItemMassCache[key] = itemMass;
-            }
+            ItemStats stats = GetItemStats(item.Type);
             float amt = (float)item.Amount;
-            float v = amt * itemVol;
-            float m = amt * itemMass;
+            float v = amt * stats.Volume;
+            float m = amt * stats.Mass;
 
-            if (typeId == OreType) { _scan.OreVol += v; _scan.OreMass += m; _scan.OreCount++; }
-            else if (typeId == IngotType) { _scan.IngotVol += v; _scan.IngotMass += m; _scan.IngotCount++; }
-            else if (typeId == CompType) { _scan.CompVol += v; _scan.CompMass += m; _scan.CompCount++; }
-            else if (typeId == AmmoType) { _scan.AmmoVol += v; _scan.AmmoMass += m; _scan.AmmoCount++; }
-            else if (typeId == GunType || typeId == O2Type || typeId == H2Type) { _scan.ToolVol += v; _scan.ToolMass += m; _scan.ToolCount++; }
-            else { _scan.OtherVol += v; _scan.OtherMass += m; _scan.OtherCount++; }
+            switch (stats.Category)
+            {
+                case CatOre: _scan.OreVol += v; _scan.OreMass += m; _scan.OreCount++; break;
+                case CatIngot: _scan.IngotVol += v; _scan.IngotMass += m; _scan.IngotCount++; break;
+                case CatComponent: _scan.CompVol += v; _scan.CompMass += m; _scan.CompCount++; break;
+                case CatAmmo: _scan.AmmoVol += v; _scan.AmmoMass += m; _scan.AmmoCount++; break;
+                case CatTool: _scan.ToolVol += v; _scan.ToolMass += m; _scan.ToolCount++; break;
+                default: _scan.OtherVol += v; _scan.OtherMass += m; _scan.OtherCount++; break;
+            }
         }
 
         void DrawContainerRow(int idx, float rowTop)
         {
             ContainerRow row = _scan.Containers[idx];
             DrawProgressRow(_frame, rowTop, "MyObjectBuilder_Package/Package", row.Name,
-                $"{FormatStorage(row.Vol, row.Mass)} ({row.Ratio * 100f:0}%)", row.Ratio, BarColor(row.Ratio));
+                row.Value, row.Ratio, BarColor(row.Ratio));
         }
     }
 }

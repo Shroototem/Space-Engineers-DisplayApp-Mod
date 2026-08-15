@@ -35,7 +35,31 @@ namespace DisplayApps
             public bool HasO2;
             public BatterySummary Bat;
             public float CargoVol, CargoMax;
+
+            // Row strings/colors, precomputed in the scan so every display on
+            // the grid draws without formatting anything.
+            public string GasText;
+            public string ViaText;
+            public string EtaText;
+            public Color EtaColor;
+            public float CargoRatio;
+            public string CargoText;
         }
+
+        /// <summary>Battery/gas/cargo totals of one docked grid, computed once
+        /// per docked grid per window and shared by every host scan that sees
+        /// that grid (multiple displays with different configs, neighbouring
+        /// stations docked to the same ship).</summary>
+        class ShipStats
+        {
+            public long Window = -1;
+            public BatterySummary Bat;
+            public bool HasH2, HasO2;
+            public float CargoVol, CargoMax;
+        }
+
+        static readonly Dictionary<long, ShipStats> _dockStats = new Dictionary<long, ShipStats>();
+        static readonly List<long> _staleDockStats = new List<long>();
 
         class DockedScan : IScanData
         {
@@ -43,6 +67,7 @@ namespace DisplayApps
             readonly List<DockedShip> _pool = new List<DockedShip>();
             public readonly HashSet<long> SeenGrids = new HashSet<long>();
             public int Connectors, Connected;
+            public string DockedText, ConnText;
 
             public void Clear()
             {
@@ -51,6 +76,8 @@ namespace DisplayApps
                 SeenGrids.Clear();
                 Connectors = 0;
                 Connected = 0;
+                DockedText = null;
+                ConnText = null;
             }
 
             public DockedShip RentShip()
@@ -59,9 +86,25 @@ namespace DisplayApps
                 {
                     DockedShip ship = _pool[_pool.Count - 1];
                     _pool.RemoveAt(_pool.Count - 1);
+                    // Reset the accumulated fields - a recycled ship must not
+                    // carry the previous window's totals into this one.
+                    ship.Bat = default(BatterySummary);
+                    ship.HasH2 = false;
+                    ship.HasO2 = false;
+                    ship.CargoVol = 0f;
+                    ship.CargoMax = 0f;
                     return ship;
                 }
                 return new DockedShip();
+            }
+        }
+
+        sealed class NameComparer : IComparer<DockedShip>
+        {
+            public static readonly NameComparer Instance = new NameComparer();
+            public int Compare(DockedShip x, DockedShip y)
+            {
+                return string.Compare(x.GridName, y.GridName, false);
             }
         }
 
@@ -69,7 +112,14 @@ namespace DisplayApps
         MySpriteDrawFrame _frame;
         DockedScan _scan;
         readonly Action<int, float> _drawShipRow;
-        readonly List<MyTerminalBlock> _dockedBlocks = new List<MyTerminalBlock>();
+
+        /// <summary>Shared block buffer for the docked-grid walk - only one
+        /// scan runs at a time, so one static list serves all instances.</summary>
+        static readonly List<MyTerminalBlock> _dockedBlocks = new List<MyTerminalBlock>();
+
+        static readonly Color IdleColor = new Color(140, 145, 155);
+        static readonly Color ChargeColor = new Color(50, 210, 90);
+        static readonly Color DrainColor = new Color(230, 60, 50);
 
         public DockedApp(MySurface surface, MyCubeBlock block, Vector2 size)
             : base(surface, block, size)
@@ -89,8 +139,6 @@ namespace DisplayApps
                 if (GuardRemoteGrid(frame, scan)) return;
 
                 var ships = scan.Ships;
-                int connectors = scan.Connectors;
-                int connected = scan.Connected;
 
                 if (ships.Count == 0)
                 {
@@ -98,8 +146,8 @@ namespace DisplayApps
                     return;
                 }
 
-                AddText(frame, $"DOCKED: {ships.Count} GRID(S)", new Vector2(Left, 48f * S), 0.46f * S, new Color(50, 210, 90), TextAlignment.LEFT);
-                AddText(frame, $"CONNECTORS: {connected}/{connectors}", new Vector2(Right, 48f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
+                AddText(frame, scan.DockedText, new Vector2(Left, 48f * S), 0.46f * S, new Color(50, 210, 90), TextAlignment.LEFT);
+                AddText(frame, scan.ConnText, new Vector2(Right, 48f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
                 DrawDivider(frame, 60f);
 
                 float y = 74f * S;
@@ -112,9 +160,60 @@ namespace DisplayApps
             }
         }
 
+        /// <summary>Fills stats with the docked grid's battery/gas/cargo state.
+        /// Runs at most once per docked grid per window (Window stamp).</summary>
+        static void RefreshShipStats(ShipStats stats, MyGrid grid, long window)
+        {
+            if (stats.Window == window) return;
+            stats.Window = window;
+            stats.Bat = default(BatterySummary);
+            stats.HasH2 = false;
+            stats.HasO2 = false;
+            stats.CargoVol = 0f;
+            stats.CargoMax = 0f;
+
+            if (MyAPIGateway.TerminalActionsHelper == null) return;
+            var ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+            if (ts == null) return;
+
+            _dockedBlocks.Clear();
+            ts.GetBlocks(_dockedBlocks);
+            for (int k = 0; k < _dockedBlocks.Count; k++)
+            {
+                MyTerminalBlock fb = _dockedBlocks[k];
+                if (fb.CubeGrid != grid) continue;
+
+                Battery bat = fb as Battery;
+                if (bat != null)
+                {
+                    AccumulateBattery(ref stats.Bat, bat);
+                    continue;
+                }
+
+                GasTank tank = fb as GasTank;
+                if (tank != null)
+                {
+                    if (IsHydrogenTank(tank)) stats.HasH2 = true;
+                    else stats.HasO2 = true;
+                    continue;
+                }
+
+                if (fb.InventoryCount > 0)
+                {
+                    for (int inv = 0; inv < fb.InventoryCount; inv++)
+                    {
+                        VRage.Game.ModAPI.IMyInventory invb = fb.GetInventory(inv);
+                        stats.CargoVol += (float)invb.CurrentVolume;
+                        stats.CargoMax += (float)invb.MaxVolume;
+                    }
+                }
+            }
+        }
+
         DockedScan ScanGrid()
         {
             RefreshTerminalBlocks();
+            long window = Window();
 
             DockedScan scan = RentScan<DockedScan>();
             for (int i = 0; i < TerminalBlocks.Count; i++)
@@ -122,59 +221,83 @@ namespace DisplayApps
                 MyConnector c = TerminalBlocks[i] as MyConnector;
                 if (c == null) continue;
                 scan.Connectors++;
-                if (c.OtherConnector == null) continue;
-                scan.Connected++;
                 MyConnector other = c.OtherConnector;
-                if (other == null || other.CubeGrid == null) continue;
+                if (other == null) continue;
+                scan.Connected++;
                 MyGrid grid = other.CubeGrid;
+                if (grid == null) continue;
                 if (!scan.SeenGrids.Add(grid.EntityId)) continue;
 
                 DockedShip ship = scan.RentShip();
                 ship.GridName = grid.CustomName;
                 if (string.IsNullOrEmpty(ship.GridName)) ship.GridName = grid.DisplayName;
+                if (string.IsNullOrEmpty(ship.GridName)) ship.GridName = "GRID";
                 ship.GridName = Truncate(ship.GridName, 18);
                 ship.ConnectorName = Truncate(BlockName(c), 16);
-                ship.Icon = EmoteIcons[(int)(grid.EntityId % EmoteIcons.Length)];
+                ship.Icon = EmoteIcons[(int)(grid.EntityId & 15)];
 
-                if (MyAPIGateway.TerminalActionsHelper != null)
+                ShipStats stats;
+                if (!_dockStats.TryGetValue(grid.EntityId, out stats))
                 {
-                    var ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
-                    if (ts != null)
-                    {
-                        _dockedBlocks.Clear();
-                        ts.GetBlocks(_dockedBlocks);
-                        for (int k = 0; k < _dockedBlocks.Count; k++)
-                        {
-                            MyTerminalBlock fb = _dockedBlocks[k];
-                            if (fb.CubeGrid != grid) continue;
-                            if (fb is Battery)
-                            {
-                                Battery bat = (Battery)fb;
-                                AccumulateBattery(ref ship.Bat, bat);
-                            }
-                            else if (fb is GasTank)
-                            {
-                                GasTank t = (GasTank)fb;
-                                if (IsHydrogenTank(t)) ship.HasH2 = true;
-                                else ship.HasO2 = true;
-                            }
-
-                            if (!(fb is Sandbox.ModAPI.IMyGasTank) && fb.InventoryCount > 0)
-                            {
-                                for (int inv = 0; inv < fb.InventoryCount; inv++)
-                                {
-                                    VRage.Game.ModAPI.IMyInventory invb = fb.GetInventory(inv);
-                                    ship.CargoVol += (float)invb.CurrentVolume;
-                                    ship.CargoMax += (float)invb.MaxVolume;
-                                }
-                            }
-                        }
-                    }
+                    stats = new ShipStats();
+                    _dockStats[grid.EntityId] = stats;
                 }
+                RefreshShipStats(stats, grid, window);
+                ship.Bat = stats.Bat;
+                ship.HasH2 = stats.HasH2;
+                ship.HasO2 = stats.HasO2;
+                ship.CargoVol = stats.CargoVol;
+                ship.CargoMax = stats.CargoMax;
+
+                // Row strings - all pure functions of the values above, so
+                // they are built once per grid per window, not per display.
+                ship.GasText = ship.HasH2 ? (ship.HasO2 ? "H2 O2" : "H2") : (ship.HasO2 ? "O2" : "");
+                ship.ViaText = "via " + ship.ConnectorName;
+
+                float netIn = ship.Bat.NetFlow;
+                string pTime;
+                if (ship.Bat.Max <= 0.001f)
+                {
+                    ship.EtaColor = IdleColor;
+                    pTime = "--";
+                }
+                else if (netIn > 0.001f)
+                {
+                    ship.EtaColor = ChargeColor;
+                    pTime = FormatEta((ship.Bat.Max - ship.Bat.Stored) / netIn);
+                }
+                else if (netIn < -0.001f)
+                {
+                    ship.EtaColor = DrainColor;
+                    pTime = FormatEta(ship.Bat.Stored / -netIn);
+                }
+                else
+                {
+                    ship.EtaColor = IdleColor;
+                    pTime = "--";
+                }
+                ship.EtaText = "T-" + pTime;
+
+                ship.CargoRatio = ship.CargoMax > 0f ? ship.CargoVol / ship.CargoMax : 0f;
+                ship.CargoText = "Cargo " + (ship.CargoRatio * 100f).ToString("0") + "%";
+
                 scan.Ships.Add(ship);
             }
 
-            scan.Ships.Sort((x, y) => string.Compare(x.GridName, y.GridName, false));
+            // Drop cached stats of grids that undocked.
+            if (_dockStats.Count > 64)
+            {
+                _staleDockStats.Clear();
+                foreach (var kv in _dockStats)
+                    if (kv.Value.Window != window) _staleDockStats.Add(kv.Key);
+                for (int i = 0; i < _staleDockStats.Count; i++)
+                    _dockStats.Remove(_staleDockStats[i]);
+                _staleDockStats.Clear();
+            }
+
+            scan.Ships.Sort(NameComparer.Instance);
+            scan.DockedText = "DOCKED: " + scan.Ships.Count + " GRID(S)";
+            scan.ConnText = "CONNECTORS: " + scan.Connected + "/" + scan.Connectors;
             return scan;
         }
 
@@ -184,51 +307,25 @@ namespace DisplayApps
             _frame.Add(Icon(ship.Icon, new Vector2(Left + 20f * S, rowTop + 18f * S), 32f * S, Color.White));
             AddText(_frame, ship.GridName, new Vector2(Left + 42f * S, rowTop), 0.46f * S, FgColor, TextAlignment.LEFT);
 
-            string gas = (ship.HasH2 ? "H2 " : "") + (ship.HasO2 ? "O2" : "");
             float connRight = Right;
-            if (gas.Length > 0)
+            if (ship.GasText.Length > 0)
             {
-                AddText(_frame, gas.TrimEnd(), new Vector2(Right, rowTop), 0.42f * S, new Color(80, 200, 230), TextAlignment.RIGHT);
+                AddText(_frame, ship.GasText, new Vector2(Right, rowTop), 0.42f * S, new Color(80, 200, 230), TextAlignment.RIGHT);
                 connRight = Right - 42f * S;
             }
-            AddText(_frame, "via " + ship.ConnectorName, new Vector2(connRight, rowTop), 0.44f * S, new Color(80, 220, 120), TextAlignment.RIGHT);
+            AddText(_frame, ship.ViaText, new Vector2(connRight, rowTop), 0.44f * S, new Color(80, 220, 120), TextAlignment.RIGHT);
 
             float y2 = rowTop + 18f * S;
-            float netIn = ship.Bat.NetFlow;
-            Color pColor;
-            string pTime;
-            if (ship.Bat.Max <= 0.001f)
-            {
-                pColor = new Color(140, 145, 155);
-                pTime = "--";
-            }
-            else if (netIn > 0.001f)
-            {
-                pColor = new Color(50, 210, 90);
-                pTime = FormatEta((ship.Bat.Max - ship.Bat.Stored) / netIn);
-            }
-            else if (netIn < -0.001f)
-            {
-                pColor = new Color(230, 60, 50);
-                pTime = FormatEta(ship.Bat.Stored / -netIn);
-            }
-            else
-            {
-                pColor = new Color(140, 145, 155);
-                pTime = "--";
-            }
-
-            _frame.Add(Icon("IconEnergy", new Vector2(Left + 48f * S, y2 + 7f * S), 13f * S, pColor));
-            AddText(_frame, "T-" + pTime, new Vector2(Left + 58f * S, y2), 0.42f * S, pColor, TextAlignment.LEFT);
+            _frame.Add(Icon("IconEnergy", new Vector2(Left + 48f * S, y2 + 7f * S), 13f * S, ship.EtaColor));
+            AddText(_frame, ship.EtaText, new Vector2(Left + 58f * S, y2), 0.42f * S, ship.EtaColor, TextAlignment.LEFT);
 
             RectangleF pwrBar = new RectangleF(new Vector2(Left + 114f * S, y2 + 6f * S), new Vector2(50f * S, 3f * S));
-            DrawCenterFlowBar(_frame, pwrBar, netIn, ship.Bat.MaxOut > 0f ? ship.Bat.MaxOut : 10f);
+            DrawCenterFlowBar(_frame, pwrBar, ship.Bat.NetFlow, ship.Bat.MaxOut > 0f ? ship.Bat.MaxOut : 10f);
 
-            float cargoRatio = ship.CargoMax > 0f ? ship.CargoVol / ship.CargoMax : 0f;
-            AddText(_frame, $"Cargo {cargoRatio * 100f:0}%", new Vector2(Right - 58f * S, y2), 0.42f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
+            AddText(_frame, ship.CargoText, new Vector2(Right - 58f * S, y2), 0.42f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
 
             RectangleF cargoBar = new RectangleF(new Vector2(Right - 50f * S, y2 + 6f * S), new Vector2(50f * S, 3f * S));
-            DrawBar(_frame, cargoBar, cargoRatio, BarColor(cargoRatio));
+            DrawBar(_frame, cargoBar, ship.CargoRatio, BarColor(ship.CargoRatio));
         }
     }
 }

@@ -2,46 +2,51 @@ using System;
 using System.Collections.Generic;
 using Sandbox.Game.GameSystems.TextSurfaceScripts;
 using VRage.Game.GUI.TextPanel;
-using VRage.Game.ModAPI.Ingame;
 using VRageMath;
 
 using MySurface = Sandbox.ModAPI.Ingame.IMyTextSurface;
 using MyCubeBlock = VRage.Game.ModAPI.Ingame.IMyCubeBlock;
-using MyInventory = VRage.Game.ModAPI.IMyInventory;
-using MyInventoryItem = VRage.Game.ModAPI.IMyInventoryItem;
+using MyInventoryItem = VRage.Game.ModAPI.Ingame.MyInventoryItem;
 
 namespace DisplayApps
 {
     [MyTextSurfaceScript("OreIngotInfo", "Info Ores & Ingots")]
     public class OreIngotApp : AppBase
     {
-        class ItemRow
+        /// <summary>Aggregated volume+mass for one subtype - one dictionary
+        /// probe per item instead of separate volume and mass maps.</summary>
+        struct Amounts
         {
-            public string SpriteKey;
-            public string Name;
             public float Vol;
             public float Mass;
         }
 
+        class ItemRow
+        {
+            public string SpriteKey;
+            public string Name;
+            public string Value;
+            public float Vol;
+            public float Mass;
+            public float Ratio;
+            public bool HasStock;
+        }
+
         class OreScan : IScanData
         {
-            public readonly Dictionary<string, float> Ores = new Dictionary<string, float>();
-            public readonly Dictionary<string, float> Ingots = new Dictionary<string, float>();
-            public readonly Dictionary<string, float> OreMasses = new Dictionary<string, float>();
-            public readonly Dictionary<string, float> IngotMasses = new Dictionary<string, float>();
+            public readonly Dictionary<string, Amounts> Ores = new Dictionary<string, Amounts>();
+            public readonly Dictionary<string, Amounts> Ingots = new Dictionary<string, Amounts>();
             public readonly List<ItemRow> RowOres = new List<ItemRow>();
             public readonly List<ItemRow> RowIngots = new List<ItemRow>();
             readonly List<ItemRow> _pool = new List<ItemRow>();
             public float OreTotal, IngotTotal;
             public float OreMassTotal, IngotMassTotal;
-            public bool AnyStock;
+            public string OresHeader, IngotsHeader;
 
             public void Clear()
             {
                 Ores.Clear();
                 Ingots.Clear();
-                OreMasses.Clear();
-                IngotMasses.Clear();
                 _pool.AddRange(RowOres);
                 _pool.AddRange(RowIngots);
                 RowOres.Clear();
@@ -50,7 +55,8 @@ namespace DisplayApps
                 IngotTotal = 0f;
                 OreMassTotal = 0f;
                 IngotMassTotal = 0f;
-                AnyStock = false;
+                OresHeader = null;
+                IngotsHeader = null;
             }
 
             public ItemRow RentRow()
@@ -65,8 +71,38 @@ namespace DisplayApps
             }
         }
 
-        const string OreType = "MyObjectBuilder_Ore";
-        const string IngotType = "MyObjectBuilder_Ingot";
+        sealed class VolDesc : IComparer<ItemRow>
+        {
+            public static readonly VolDesc Instance = new VolDesc();
+            public int Compare(ItemRow a, ItemRow b)
+            {
+                return b.Vol.CompareTo(a.Vol);
+            }
+        }
+
+        sealed class MassDesc : IComparer<ItemRow>
+        {
+            public static readonly MassDesc Instance = new MassDesc();
+            public int Compare(ItemRow a, ItemRow b)
+            {
+                return b.Mass.CompareTo(a.Mass);
+            }
+        }
+
+        /// <summary>Display name and sprite id per subtype - pure functions of
+        /// the subtype, resolved once for the session (ores and ingots share
+        /// subtype names, so each kind keeps its own map).</summary>
+        class RowInfo
+        {
+            public string Name;
+            public string Sprite;
+        }
+
+        static readonly Dictionary<string, RowInfo> _oreInfo = new Dictionary<string, RowInfo>();
+        static readonly Dictionary<string, RowInfo> _ingotInfo = new Dictionary<string, RowInfo>();
+
+        static readonly Color OreBarColor = new Color(210, 170, 90);
+        static readonly Color IngotBarColor = new Color(150, 190, 220);
 
         readonly Func<OreScan> _scanFunc;
         readonly Action<MyInventoryItem> _onItem;
@@ -94,9 +130,6 @@ namespace DisplayApps
                 _frame = frame;
                 if (GuardRemoteGrid(frame, scan)) return;
 
-                float oreTotal = scan.OreTotal, ingotTotal = scan.IngotTotal;
-                float oreMassTotal = scan.OreMassTotal, ingotMassTotal = scan.IngotMassTotal;
-
                 bool showOres = ConfigOreIngotType != 3;
                 bool showIngots = ConfigOreIngotType != 2;
                 int totalItems = (showOres ? scan.RowOres.Count : 0) + (showIngots ? scan.RowIngots.Count : 0);
@@ -122,14 +155,14 @@ namespace DisplayApps
 
                     if (showOres)
                     {
-                        DrawListGroup(frame, slot, $"ORES ({scan.RowOres.Count})", scan.RowOres.Count, y0, headerH, groupH, 24f * S, _drawOreRow);
+                        DrawListGroup(frame, slot, scan.OresHeader, scan.RowOres.Count, y0, headerH, groupH, 24f * S, _drawOreRow);
                         slot++;
                         if (showIngots)
                             DrawDivider(frame, (y0 + headerH + groupH + gap / 2f) / S);
                     }
                     if (showIngots)
                     {
-                        DrawListGroup(frame, slot, $"INGOTS ({scan.RowIngots.Count})", scan.RowIngots.Count,
+                        DrawListGroup(frame, slot, scan.IngotsHeader, scan.RowIngots.Count,
                             ListGroupTop(y0, slot, groupH, headerH, gap), headerH, groupH, 24f * S, _drawIngotRow);
                     }
                 }
@@ -140,13 +173,13 @@ namespace DisplayApps
 
                     if (showOres)
                     {
-                        AddText(frame, $"ORES ({scan.RowOres.Count})", new Vector2(Left, 56f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                        AddText(frame, scan.OresHeader, new Vector2(Left, 56f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
                         AddText(frame, "MOST ABUNDANT FIRST", new Vector2(Right, 56f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
 
                         for (int i = 0; i < scan.RowOres.Count; i++)
                         {
                             if (y + 24f * S > bottom) break;
-                            DrawItemRow(frame, scan.RowOres[i], oreTotal, oreMassTotal, new Color(210, 170, 90), y);
+                            DrawItemRow(frame, scan.RowOres[i], OreBarColor, y);
                             y += 24f * S;
                             drawn++;
                         }
@@ -162,19 +195,19 @@ namespace DisplayApps
                                 DrawDivider(frame, y / S);
                                 y += 6f * S;
                             }
-                            AddText(frame, $"INGOTS ({scan.RowIngots.Count})", new Vector2(Left, y), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                            AddText(frame, scan.IngotsHeader, new Vector2(Left, y), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
                             y += 18f * S;
                         }
                         else
                         {
-                            AddText(frame, $"INGOTS ({scan.RowIngots.Count})", new Vector2(Left, 56f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                            AddText(frame, scan.IngotsHeader, new Vector2(Left, 56f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
                             AddText(frame, "MOST ABUNDANT FIRST", new Vector2(Right, 56f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
                         }
 
                         for (int i = 0; i < scan.RowIngots.Count; i++)
                         {
                             if (y + 24f * S > bottom) break;
-                            DrawItemRow(frame, scan.RowIngots[i], ingotTotal, ingotMassTotal, new Color(150, 190, 220), y);
+                            DrawItemRow(frame, scan.RowIngots[i], IngotBarColor, y);
                             y += 24f * S;
                             drawn++;
                         }
@@ -186,6 +219,46 @@ namespace DisplayApps
             }
         }
 
+        static RowInfo InfoFor(string subtype, bool ore)
+        {
+            var map = ore ? _oreInfo : _ingotInfo;
+            RowInfo info;
+            if (!map.TryGetValue(subtype, out info))
+            {
+                info = new RowInfo();
+                info.Name = FormatItemName(subtype);
+                info.Sprite = (ore ? "MyObjectBuilder_Ore/" : "MyObjectBuilder_Ingot/") + subtype;
+                map[subtype] = info;
+            }
+            return info;
+        }
+
+        static void ZeroFill(Dictionary<string, Amounts> target, List<string> known)
+        {
+            for (int i = 0; i < known.Count; i++)
+            {
+                if (!target.ContainsKey(known[i])) target[known[i]] = default(Amounts);
+            }
+        }
+
+        void BuildRow(OreScan scan, List<ItemRow> rows, string subtype, Amounts amounts, bool ore)
+        {
+            ItemRow row = scan.RentRow();
+            row.Vol = amounts.Vol;
+            row.Mass = amounts.Mass;
+            RowInfo info = InfoFor(subtype, ore);
+            row.Name = info.Name;
+            row.SpriteKey = info.Sprite;
+            float total = ConfigStorageType == 2
+                ? (ore ? scan.OreMassTotal : scan.IngotMassTotal)
+                : (ore ? scan.OreTotal : scan.IngotTotal);
+            float val = ConfigStorageType == 2 ? amounts.Mass : amounts.Vol;
+            row.Ratio = total > 0f ? val / total : 0f;
+            row.HasStock = amounts.Vol > 0.001f || amounts.Mass > 0.001f;
+            row.Value = FormatStorage(amounts.Vol, amounts.Mass) + " (" + (row.Ratio * 100f).ToString("0") + "%)";
+            rows.Add(row);
+        }
+
         OreScan ScanGrid()
         {
             RefreshTerminalBlocks();
@@ -194,99 +267,69 @@ namespace DisplayApps
             _scan = scan;
             ForEachItem(TerminalBlocks, _onItem);
 
-            foreach (var kv in scan.Ores) scan.OreTotal += kv.Value;
-            foreach (var kv in scan.Ingots) scan.IngotTotal += kv.Value;
-            foreach (var kv in scan.OreMasses) scan.OreMassTotal += kv.Value;
-            foreach (var kv in scan.IngotMasses) scan.IngotMassTotal += kv.Value;
-            scan.AnyStock = scan.Ores.Count + scan.Ingots.Count > 0;
-
             if (ConfigFullList)
             {
-                EnsureFullListEntries(scan.Ores, SpriteLookup.Ores, OreType);
-                EnsureFullListEntries(scan.Ingots, SpriteLookup.Ingots, IngotType);
+                ZeroFill(scan.Ores, SpriteLookup.Ores);
+                ZeroFill(scan.Ingots, SpriteLookup.Ingots);
             }
 
             foreach (var kv in scan.Ores)
-            {
-                ItemRow row = scan.RentRow();
-                row.Vol = kv.Value;
-                float m;
-                scan.OreMasses.TryGetValue(kv.Key, out m);
-                row.Mass = m;
-                row.Name = FormatItemName(kv.Key.Substring(kv.Key.IndexOf('/') + 1));
-                row.SpriteKey = kv.Key;
-                scan.RowOres.Add(row);
-            }
-            scan.RowOres.Sort((a, b) => ConfigStorageType == 2 ? b.Mass.CompareTo(a.Mass) : b.Vol.CompareTo(a.Vol));
+                BuildRow(scan, scan.RowOres, kv.Key, kv.Value, true);
             foreach (var kv in scan.Ingots)
-            {
-                ItemRow row = scan.RentRow();
-                row.Vol = kv.Value;
-                float m;
-                scan.IngotMasses.TryGetValue(kv.Key, out m);
-                row.Mass = m;
-                row.Name = FormatItemName(kv.Key.Substring(kv.Key.IndexOf('/') + 1));
-                row.SpriteKey = kv.Key;
-                scan.RowIngots.Add(row);
-            }
-            scan.RowIngots.Sort((a, b) => ConfigStorageType == 2 ? b.Mass.CompareTo(a.Mass) : b.Vol.CompareTo(a.Vol));
+                BuildRow(scan, scan.RowIngots, kv.Key, kv.Value, false);
+
+            var cmp = ConfigStorageType == 2 ? (IComparer<ItemRow>)MassDesc.Instance : VolDesc.Instance;
+            scan.RowOres.Sort(cmp);
+            scan.RowIngots.Sort(cmp);
+
+            scan.OresHeader = "ORES (" + scan.RowOres.Count + ")";
+            scan.IngotsHeader = "INGOTS (" + scan.RowIngots.Count + ")";
             return scan;
         }
 
         void OnItem(MyInventoryItem item)
         {
-            var content = item.Content;
-            if (content == null) return;
-            string typeId = content.TypeId.ToString();
-            if (typeId != OreType && typeId != IngotType) return;
-            string subtype = content.SubtypeName;
-            string key = typeId + "/" + subtype;
-
-            float itemVol;
-            if (!ItemVolumeCache.TryGetValue(key, out itemVol))
-            {
-                try { itemVol = (float)new MyItemType(typeId, subtype).GetItemInfo().Volume; } catch { itemVol = 0f; }
-                ItemVolumeCache[key] = itemVol;
-            }
-            float itemMass;
-            if (!ItemMassCache.TryGetValue(key, out itemMass))
-            {
-                try { itemMass = (float)new MyItemType(typeId, subtype).GetItemInfo().Mass; } catch { itemMass = 0f; }
-                ItemMassCache[key] = itemMass;
-            }
+            ItemStats stats = GetItemStats(item.Type);
+            if (stats.Category != CatOre && stats.Category != CatIngot) return;
             float amt = (float)item.Amount;
-            float v = amt * itemVol;
-            float m = amt * itemMass;
+            float v = amt * stats.Volume;
+            float m = amt * stats.Mass;
             if (v <= 0f && m <= 0f) return;
 
-            var vols = typeId == OreType ? _scan.Ores : _scan.Ingots;
-            var masses = typeId == OreType ? _scan.OreMasses : _scan.IngotMasses;
-            float curV;
-            if (!vols.TryGetValue(key, out curV)) vols[key] = v;
-            else vols[key] = curV + v;
-
-            float curM;
-            if (!masses.TryGetValue(key, out curM)) masses[key] = m;
-            else masses[key] = curM + m;
+            string subtype = item.Type.SubtypeId;
+            Dictionary<string, Amounts> map;
+            if (stats.Category == CatOre)
+            {
+                map = _scan.Ores;
+                _scan.OreTotal += v;
+                _scan.OreMassTotal += m;
+            }
+            else
+            {
+                map = _scan.Ingots;
+                _scan.IngotTotal += v;
+                _scan.IngotMassTotal += m;
+            }
+            Amounts cur;
+            map.TryGetValue(subtype, out cur);
+            cur.Vol += v;
+            cur.Mass += m;
+            map[subtype] = cur;
         }
 
         void DrawOreRow(int idx, float y)
         {
-            DrawItemRow(_frame, _scan.RowOres[idx], _scan.OreTotal, _scan.OreMassTotal, new Color(210, 170, 90), y);
+            DrawItemRow(_frame, _scan.RowOres[idx], OreBarColor, y);
         }
 
         void DrawIngotRow(int idx, float y)
         {
-            DrawItemRow(_frame, _scan.RowIngots[idx], _scan.IngotTotal, _scan.IngotMassTotal, new Color(150, 190, 220), y);
+            DrawItemRow(_frame, _scan.RowIngots[idx], IngotBarColor, y);
         }
 
-        void DrawItemRow(MySpriteDrawFrame frame, ItemRow row, float totalVol, float totalMass, Color barColor, float y)
+        void DrawItemRow(MySpriteDrawFrame frame, ItemRow row, Color barColor, float y)
         {
-            float total = ConfigStorageType == 2 ? totalMass : totalVol;
-            float val = ConfigStorageType == 2 ? row.Mass : row.Vol;
-            float ratio = total > 0f ? val / total : 0f;
-            bool hasStock = row.Vol > 0.001f || row.Mass > 0.001f;
-            DrawProgressRow(frame, y, row.SpriteKey, row.Name, $"{FormatStorage(row.Vol, row.Mass)} ({ratio * 100f:0}%)", ratio, barColor, hasStock);
+            DrawProgressRow(frame, y, row.SpriteKey, row.Name, row.Value, row.Ratio, barColor, row.HasStock);
         }
     }
 }
