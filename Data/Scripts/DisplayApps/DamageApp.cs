@@ -102,8 +102,7 @@ namespace DisplayApps
             }
         }
 
-        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
-        static readonly Comparison<DamageRow> RatioDesc = (a, b) => b.Ratio.CompareTo(a.Ratio);
+        // No named Comparison<T> field - see the note in AssemblerApp.
 
         readonly Func<DamageScan> _scanFunc;
         MySpriteDrawFrame _frame;
@@ -278,7 +277,7 @@ namespace DisplayApps
                 row.Icon = DefIcon(slim);
                 scan.Rows.Add(row);
             }
-            scan.Rows.Sort(RatioDesc);
+            scan.Rows.Sort((a, b) => b.Ratio.CompareTo(a.Ratio));
 
             // Worst HighlightCount fat blocks (the end of the list - sorted
             // most complete first). Blocks with an empty entity name get one

@@ -53,8 +53,7 @@ namespace DisplayApps
             }
         }
 
-        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
-        static readonly Comparison<CompRow> CountDesc = (a, b) => b.Count.CompareTo(a.Count);
+        // No named Comparison<T> field - see the note in AssemblerApp.
 
         const string CompType = "MyObjectBuilder_Component";
 
@@ -150,7 +149,7 @@ namespace DisplayApps
                 row.Value = kv.Value > 0 ? "x" + kv.Value.ToString("N0") : "x0";
                 scan.Rows.Add(row);
             }
-            scan.Rows.Sort(CountDesc);
+            scan.Rows.Sort((a, b) => b.Count.CompareTo(a.Count));
             scan.MaxCount = scan.Rows.Count > 0 && scan.Rows[0].Count > 0 ? scan.Rows[0].Count : 1;
             scan.TypesText = "COMPONENT TYPES: " + scan.Rows.Count;
             scan.TotalText = "TOTAL: " + scan.TotalItems.ToString("N0") + " ITEM(S)";

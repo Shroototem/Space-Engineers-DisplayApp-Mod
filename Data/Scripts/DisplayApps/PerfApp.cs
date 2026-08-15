@@ -34,14 +34,11 @@ namespace DisplayApps
         /// surface property, so it does not need 1.67 s freshness.</summary>
         const int TextRefreshEvery = 6;
 
-        // Comparison<T>, not IComparer<T> - the mod's script whitelist
-        // rejects some generic delegate/interface types (e.g. Predicate<T>),
-        // and Comparison<T> is the one already proven to compile in-game.
-        static readonly Comparison<KeyValuePair<string, PerfStat>> StatMaxDesc =
-            (a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs);
-        static readonly Comparison<KeyValuePair<string, InstanceStat>> InstMaxDesc =
-            (a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs);
-        static readonly Comparison<SlowEvent> SlowDesc = (a, b) => b.Ms.CompareTo(a.Ms);
+        // No named Comparison<T> fields: the script whitelist rejects
+        // explicit generic delegate/interface type declarations (Predicate<T>,
+        // and Comparison<T> as a field type both fail), so each sort's lambda
+        // is passed inline at its Sort() call site instead, where the
+        // delegate type is only ever inferred, never spelled out in source.
 
         // Per-display state: PerfLog is per-display config, so the transition
         // tracking must be per instance - a static here made two PerfApp LCDs
@@ -66,7 +63,7 @@ namespace DisplayApps
             {
                 _statBuffer.Clear();
                 _statBuffer.AddRange(Perf.Stats);
-                _statBuffer.Sort(StatMaxDesc);
+                _statBuffer.Sort((a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs));
 
                 if (ConfigPerfLog)
                 {
@@ -308,7 +305,7 @@ namespace DisplayApps
                 + "IV_AVG".PadLeft(9) + "IV_MAX".PadLeft(9));
             _instBuffer.Clear();
             _instBuffer.AddRange(Perf.Instances);
-            _instBuffer.Sort(InstMaxDesc);
+            _instBuffer.Sort((a, b) => b.Value.MaxMs.CompareTo(a.Value.MaxMs));
             int shown = Math.Min(_instBuffer.Count, MaxInstanceRows);
             for (int i = 0; i < shown; i++)
             {
@@ -331,7 +328,7 @@ namespace DisplayApps
             sb.Append("== SLOW EVENTS (>= ").Append(Perf.SlowMs.ToString("0")).Append("ms, worst ").Append(Perf.SlowCap).AppendLine(") ==");
             _slowBuffer.Clear();
             _slowBuffer.AddRange(Perf.SlowEvents);
-            _slowBuffer.Sort(SlowDesc);
+            _slowBuffer.Sort((a, b) => b.Ms.CompareTo(a.Ms));
             if (_slowBuffer.Count == 0)
             {
                 sb.AppendLine("NONE");

@@ -88,8 +88,7 @@ namespace DisplayApps
             }
         }
 
-        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
-        static readonly Comparison<ContainerRow> RatioDesc = (a, b) => b.Ratio.CompareTo(a.Ratio);
+        // No named Comparison<T> field - see the note in AssemblerApp.
 
         readonly Func<StorageScan> _scanFunc;
         MySpriteDrawFrame _frame;
@@ -220,7 +219,7 @@ namespace DisplayApps
                 scan.Containers.Add(row);
             }
 
-            scan.Containers.Sort(RatioDesc);
+            scan.Containers.Sort((a, b) => b.Ratio.CompareTo(a.Ratio));
 
             // Display strings - pure functions of the totals above.
             float totalMatVol = scan.OreVol + scan.IngotVol + scan.CompVol + scan.AmmoVol + scan.ToolVol + scan.OtherVol;

@@ -85,11 +85,11 @@ namespace DisplayApps
             }
         }
 
-        // Comparison<T> (not IComparer<T>) - the mod's script whitelist
-        // rejects some generic delegate/interface types (e.g. Predicate<T>),
-        // and Comparison<T> is the one already proven to compile in-game.
-        static readonly Comparison<AssemblerData> NameComparer =
-            (x, y) => string.Compare(x.Name, y.Name, false);
+        // No named Comparison<T>/IComparer<T> field: the script whitelist
+        // rejects explicit generic delegate/interface type declarations
+        // (Predicate<T>, and Comparison<T> as a field type both fail), so
+        // the lambda is passed inline at the Sort() call site instead,
+        // where its delegate type is only ever inferred, never spelled out.
 
         /// <summary>Reused queue read buffer - the ingame GetQueue overload
         /// fills it instead of allocating a copy per assembler per scan.</summary>
@@ -253,7 +253,7 @@ namespace DisplayApps
                 scan.Assemblers.Add(data);
             }
 
-            scan.Assemblers.Sort(NameComparer);
+            scan.Assemblers.Sort((x, y) => string.Compare(x.Name, y.Name, false));
             scan.HeaderText = "ASSEMBLERS: " + scan.AsmCount + "   (" + scan.AssembleCount + " ASSEMBLING / " + scan.DisassembleCount + " DISASSEMBLING)";
             scan.QueueText = "QUEUE: " + scan.QueueItems + " ITEM(S)";
             return scan;

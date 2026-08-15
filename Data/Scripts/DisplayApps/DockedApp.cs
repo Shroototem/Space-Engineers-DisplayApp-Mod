@@ -99,9 +99,7 @@ namespace DisplayApps
             }
         }
 
-        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
-        static readonly Comparison<DockedShip> NameComparer =
-            (x, y) => string.Compare(x.GridName, y.GridName, false);
+        // No named Comparison<T> field - see the note in AssemblerApp.
 
         readonly Func<DockedScan> _scanFunc;
         MySpriteDrawFrame _frame;
@@ -290,7 +288,7 @@ namespace DisplayApps
                 _staleDockStats.Clear();
             }
 
-            scan.Ships.Sort(NameComparer);
+            scan.Ships.Sort((x, y) => string.Compare(x.GridName, y.GridName, false));
             scan.DockedText = "DOCKED: " + scan.Ships.Count + " GRID(S)";
             scan.ConnText = "CONNECTORS: " + scan.Connected + "/" + scan.Connectors;
             return scan;

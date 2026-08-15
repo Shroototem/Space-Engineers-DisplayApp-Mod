@@ -71,9 +71,7 @@ namespace DisplayApps
             }
         }
 
-        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
-        static readonly Comparison<ItemRow> VolDesc = (a, b) => b.Vol.CompareTo(a.Vol);
-        static readonly Comparison<ItemRow> MassDesc = (a, b) => b.Mass.CompareTo(a.Mass);
+        // No named Comparison<T> field - see the note in AssemblerApp.
 
         /// <summary>Display name and sprite id per subtype - pure functions of
         /// the subtype, resolved once for the session (ores and ingots share
@@ -264,9 +262,16 @@ namespace DisplayApps
             foreach (var kv in scan.Ingots)
                 BuildRow(scan, scan.RowIngots, kv.Key, kv.Value, false);
 
-            var cmp = ConfigStorageType == 2 ? MassDesc : VolDesc;
-            scan.RowOres.Sort(cmp);
-            scan.RowIngots.Sort(cmp);
+            if (ConfigStorageType == 2)
+            {
+                scan.RowOres.Sort((a, b) => b.Mass.CompareTo(a.Mass));
+                scan.RowIngots.Sort((a, b) => b.Mass.CompareTo(a.Mass));
+            }
+            else
+            {
+                scan.RowOres.Sort((a, b) => b.Vol.CompareTo(a.Vol));
+                scan.RowIngots.Sort((a, b) => b.Vol.CompareTo(a.Vol));
+            }
 
             scan.OresHeader = "ORES (" + scan.RowOres.Count + ")";
             scan.IngotsHeader = "INGOTS (" + scan.RowIngots.Count + ")";
