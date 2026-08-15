@@ -1,0 +1,1599 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using Sandbox.Game.GameSystems.TextSurfaceScripts;
+using Sandbox.ModAPI;
+using VRage.Game.GUI.TextPanel;
+using VRage.Game.ModAPI.Ingame;
+using VRage.Utils;
+using VRageMath;
+
+using MySurface = Sandbox.ModAPI.Ingame.IMyTextSurface;
+using MyCubeBlock = VRage.Game.ModAPI.Ingame.IMyCubeBlock;
+using MySlimBlock = VRage.Game.ModAPI.IMySlimBlock;
+using MyTerminalBlock = Sandbox.ModAPI.IMyTerminalBlock;
+using MyInventoryItem = VRage.Game.ModAPI.IMyInventoryItem;
+
+namespace DisplayApps
+{
+    /// <summary>
+    /// Shared base for all display apps: handles scaling, positioning and the
+    /// common drawing helpers (bars, text, sprites) used by every app.
+    /// </summary>
+    public abstract class AppBase : MyTextSurfaceScriptBase
+    {
+        protected readonly string AppRegionName;
+        protected float S, Mx, Left, Right, Cx, Top, Bottom;
+        protected readonly List<MySlimBlock> GridBlocks = new List<MySlimBlock>();
+        protected readonly List<MyTerminalBlock> TerminalBlocks = new List<MyTerminalBlock>();
+        protected readonly List<string> ConfigGroups = new List<string>();
+        protected float[] TextPadding = new float[] { 16f, 16f, 16f, 16f };
+        protected float TextScale = 1f;
+        protected bool ConfigScroll;
+        protected bool ConfigSubGrids;
+        protected bool ConfigFullList = true;
+        protected bool ConfigHighlightDamaged;
+        protected bool ConfigPerfLog;
+        protected int ConfigStorageType = 1;
+        protected int ConfigOreIngotType = 1;
+        protected string ConfigRemoteName = "";
+        VRage.Game.ModAPI.IMyCubeGrid _scanGrid;
+        int _lastScanBlocks;
+        string _lastCustomData;
+        string _configGroupsKey = "";
+        readonly int[] ScrollPos = new int[4];
+        readonly int[] ScrollShown = new int[4];
+        readonly List<VRage.Game.ModAPI.IMyCubeGrid> _subGrids = new List<VRage.Game.ModAPI.IMyCubeGrid>();
+        static readonly Dictionary<string, RemoteLookup> _remoteLookup = new Dictionary<string, RemoteLookup>();
+        static readonly HashSet<VRage.ModAPI.IMyEntity> _entityBuffer = new HashSet<VRage.ModAPI.IMyEntity>();
+        protected Color BgColor;
+        protected Color FgColor;
+
+        static readonly Dictionary<string, string> AppClassToRegion = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            { "AssemblerApp", "AssemblerInfo" },
+            { "ComponentsApp", "ComponentsInfo" },
+            { "DamageApp", "DamageInfo" },
+            { "DockedApp", "DockedInfo" },
+            { "GasApp", "O2H2" },
+            { "OreIngotApp", "OreIngotInfo" },
+            { "PerfApp", "PerfInfo" },
+            { "PowerApp", "PowerInfo" },
+            { "StorageApp", "StorageInfo" }
+        };
+
+        static readonly string[] KnownAppRegions =
+        {
+            "AssemblerInfo",
+            "ComponentsInfo",
+            "DamageInfo",
+            "DockedInfo",
+            "O2H2",
+            "OreIngotInfo",
+            "PerfInfo",
+            "PowerInfo",
+            "StorageInfo"
+        };
+
+        static readonly string[] DefaultOptionKeys =
+        {
+            "TextPadding",
+            "TextScale",
+            "TextScroll",
+            "SubGrids",
+            "FullList",
+            "HighlightDamaged",
+            "StorageType",
+            "OreIngotType",
+            "Groups",
+            "RemoteGrid",
+            "PerfLog"
+        };
+
+        static readonly string[] DefaultOptionDefaults =
+        {
+            "[16,16,16,16]",
+            "1.0",
+            "false",
+            "false",
+            "true",
+            "false",
+            "1",
+            "1",
+            "",
+            "",
+            "false"
+        };
+
+        const string ConfigMarker = "@region";
+        const string ConfigTemplate =
+            "@region DEFAULT\n" +
+            "# DisplayApps settings - one option per line: \"Option: value\".\n" +
+            "# Lines starting with '#' are ignored.\n" +
+            "# TextPadding: Padding in pixels as [UP, DOWN, LEFT, RIGHT] (default: [16,16,16,16]).\n" +
+            "TextPadding: [16,16,16,16]\n" +
+            "\n" +
+            "# TextScale: Multiplier for the whole layout - text, icons, bars and spacing\n" +
+            "#   scale and shift together (default: 1.0).\n" +
+            "TextScale: 1.0\n" +
+            "\n" +
+            "# TextScroll: Auto-scroll lists that don't fit on screen (true/false, default: false).\n" +
+            "TextScroll: false\n" +
+            "\n" +
+            "# SubGrids: Also scan blocks on subgrids connected by rotors/pistons/hinges\n" +
+            "#   (true/false, default: false).\n" +
+            "SubGrids: false\n" +
+            "\n" +
+            "# FullList: Show all item types, also ones with 0 stock, or only the\n" +
+            "#   types you have (true/false, default: true).\n" +
+            "FullList: true\n" +
+            "\n" +
+            "# HighlightDamaged: Highlight the 10 most damaged blocks in the\n" +
+            "#   world with a solid outline (true/false, default: false).\n" +
+            "HighlightDamaged: false\n" +
+            "\n" +
+            "# StorageType: Unit display for storage - 1: Both (kg & L), 2: kg only, 3: L only (default: 1).\n" +
+            "StorageType: 1\n" +
+            "\n" +
+            "# OreIngotType: Sections shown by the Ores & Ingots app - 1: Both, 2: Ores only, 3: Ingots only (default: 1).\n" +
+            "OreIngotType: 1\n" +
+            "\n" +
+            "# Groups: Comma separated names of terminal block groups. When set,\n" +
+            "#   ONLY blocks in these groups are shown. Leave empty for the whole grid.\n" +
+            "Groups: \n" +
+            "\n" +
+            "# RemoteGrid: Name of another grid to pull data from instead of the grid\n" +
+            "#   the display is on. Leave empty for the local grid.\n" +
+            "RemoteGrid: \n" +
+            "\n" +
+            "# PerfLog: Advanced performance stats on the Performance app (timing\n" +
+            "#   histograms, per-display breakdown, slow update list).\n" +
+            "PerfLog: false\n" +
+            "@end region\n" +
+            "\n" +
+            "@region AssemblerInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region ComponentsInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region DamageInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region DockedInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region O2H2\n" +
+            "@end region\n" +
+            "\n" +
+            "@region OreIngotInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region PerfInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region PowerInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region StorageInfo\n" +
+            "@end region";
+        readonly Dictionary<string, Dictionary<string, string>> _regionValues = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        readonly HashSet<long> _groupIds = new HashSet<long>();
+        readonly List<IMyBlockGroup> _blockGroups = new List<IMyBlockGroup>();
+        readonly List<MyTerminalBlock> _groupBlocks = new List<MyTerminalBlock>();
+
+        protected AppBase(MySurface surface, MyCubeBlock block, Vector2 size)
+            : base(surface, block, size)
+        {
+            string region;
+            if (!AppClassToRegion.TryGetValue(GetType().Name, out region))
+                region = GetType().Name;
+            AppRegionName = region;
+            if (block != null && block.EntityId != 0)
+            {
+                AppTerminalControls.EnsureRegistered(block as MyTerminalBlock);
+                int surfaceIndex = -1;
+                var provider = block as Sandbox.ModAPI.Ingame.IMyTextSurfaceProvider;
+                if (provider != null)
+                {
+                    for (int i = 0; i < provider.SurfaceCount; i++)
+                    {
+                        if (object.ReferenceEquals(provider.GetSurface(i), surface))
+                        {
+                            surfaceIndex = i;
+                            break;
+                        }
+                    }
+                }
+                AppTerminalControls.RecordAppSelection(block.EntityId, region, surfaceIndex);
+            }
+            BgColor = surface.ScriptBackgroundColor;
+            FgColor = surface.ScriptForegroundColor;
+            S = Math.Min(m_scale.X, m_scale.Y);
+            if (S < 0.75f) S = 0.75f;
+            Mx = 16f * S;
+            Left = Mx;
+            Right = m_size.X - 16f * S;
+            Cx = (Left + Right) / 2f;
+            Top = 16f * S;
+            Bottom = m_size.Y - 32f * S;
+        }
+
+        public override ScriptUpdate NeedsUpdate => ScriptUpdate.Update100;
+
+        public override void Run()
+        {
+            try
+            {
+                AppTerminalControls.EnsureRegistered(Block as MyTerminalBlock);
+                BgColor = Surface.ScriptBackgroundColor;
+                FgColor = Surface.ScriptForegroundColor;
+                var sw = Stopwatch.StartNew();
+                LoadConfig();
+                RunApp();
+                sw.Stop();
+                double ms = sw.Elapsed.TotalMilliseconds;
+                string label;
+                MyTerminalBlock tb = Block as MyTerminalBlock;
+                label = (tb != null && tb.CustomName.Length > 0) ? tb.CustomName : "Block " + Block.EntityId;
+                Perf.Record(GetType().Name, GetType().Name + " [" + label + "]", ms, MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds);
+                if (ms > 50.0)
+                    MyLog.Default.WriteLine("DisplayApps " + GetType().Name + ": slow update " + ms.ToString("0.0") + " ms");
+            }
+            catch
+            {
+            }
+        }
+
+        /// <summary>Current scan window index - advances once per update (100 sim
+        /// ticks, derived from the engine's tick rate).</summary>
+        protected long Window()
+        {
+            return (long)(MyAPIGateway.Session.ElapsedPlayTime.TotalSeconds * VRage.Game.MyEngineConstants.UPDATE_STEPS_PER_SECOND / 100.0);
+        }
+
+        protected abstract void RunApp();
+
+        /// <summary>Refills GridBlocks with the blocks of the scan grid (the LCD's own
+        /// grid, or the RemoteGrid when configured - plus all mechanically
+        /// connected subgrids when SubGrids is enabled), then applies the
+        /// configured group filter (if any).</summary>
+        protected void RefreshGridBlocks()
+        {
+            GridBlocks.Clear();
+            var grid = _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+            if (ConfigSubGrids && MyAPIGateway.GridGroups != null)
+            {
+                _subGrids.Clear();
+                MyAPIGateway.GridGroups.GetGroup(grid, VRage.Game.ModAPI.GridLinkTypeEnum.Mechanical, _subGrids);
+                for (int i = 0; i < _subGrids.Count; i++)
+                {
+                    if (_subGrids[i] != null) _subGrids[i].GetBlocks(GridBlocks);
+                }
+            }
+            else
+            {
+                grid.GetBlocks(GridBlocks);
+            }
+            ApplyGroupFilter();
+            _lastScanBlocks = GridBlocks.Count;
+        }
+
+        /// <summary>Refills TerminalBlocks with the terminal blocks of the scan
+        /// grid's terminal system - a game-maintained list, so no armor cubes
+        /// and no fat-block lookups. The terminal system spans the whole
+        /// logical group (mechanical and merge connections), so when SubGrids
+        /// is off only blocks directly on the scan grid are kept. Applies the
+        /// configured group filter.</summary>
+        protected void RefreshTerminalBlocks()
+        {
+            TerminalBlocks.Clear();
+            var grid = _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+            if (MyAPIGateway.TerminalActionsHelper == null) return;
+            var ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+            if (ts == null) return;
+            ts.GetBlocks(TerminalBlocks);
+            if (!ConfigSubGrids)
+            {
+                for (int i = TerminalBlocks.Count - 1; i >= 0; i--)
+                    if (TerminalBlocks[i].CubeGrid != grid) TerminalBlocks.RemoveAt(i);
+            }
+            ApplyGroupFilter();
+            _lastScanBlocks = TerminalBlocks.Count;
+        }
+
+        /// <summary>Iterates every inventory item on the given terminal blocks
+        /// (gas tanks and blocks without inventories are skipped) and passes
+        /// each item to onItem. Shared by all inventory-scanning apps so the
+        /// nested block/inventory traversal lives in one place.</summary>
+        protected void ForEachItem(List<MyTerminalBlock> blocks, Action<MyInventoryItem> onItem)
+        {
+            for (int i = 0; i < blocks.Count; i++)
+            {
+                var b = blocks[i];
+                if (b is Sandbox.ModAPI.IMyGasTank) continue;
+                if (b.InventoryCount == 0) continue;
+                for (int inv = 0; inv < b.InventoryCount; inv++)
+                {
+                    var items = b.GetInventory(inv).GetItems();
+                    for (int k = 0; k < items.Count; k++)
+                        onItem(items[k]);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Reads the "@region DEFAULT" and app-specific "@region AppId" config sections from CustomData.
+        /// Writes pre-filled template on first run so the settings are visible and easy to edit.
+        /// </summary>
+        void LoadConfig()
+        {
+            MyTerminalBlock tb = Block as MyTerminalBlock;
+            if (tb == null)
+            {
+                ApplyLayout();
+                return;
+            }
+
+            string data = tb.CustomData ?? "";
+            if (data == _lastCustomData)
+            {
+                ApplyLayout();
+                return;
+            }
+            _lastCustomData = data;
+
+            ConfigGroups.Clear();
+            _regionValues.Clear();
+            TextPadding = new float[] { 16f, 16f, 16f, 16f };
+            TextScale = 1f;
+            ConfigScroll = false;
+            ConfigSubGrids = false;
+            ConfigFullList = true;
+            ConfigHighlightDamaged = false;
+            ConfigPerfLog = false;
+            ConfigStorageType = 1;
+            ConfigOreIngotType = 1;
+            ConfigRemoteName = "";
+
+            if (data.IndexOf("@region", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                tb.CustomData = (data.Length > 0 ? data.TrimEnd() + "\n\n" : "") + ConfigTemplate;
+                ApplyLayout();
+                return;
+            }
+
+            var parsed = ParseConfigRegions(data);
+            foreach (var kv in parsed)
+                _regionValues[kv.Key] = kv.Value;
+
+            string groupsVal;
+            if (TryGetConfigValue("Groups", out groupsVal))
+            {
+                string[] parts = groupsVal.Split(new char[] { ',', ';', '|' }, StringSplitOptions.RemoveEmptyEntries);
+                for (int k = 0; k < parts.Length; k++)
+                {
+                    string groupName = parts[k].Trim();
+                    if (groupName.Length > 0) ConfigGroups.Add(groupName);
+                }
+            }
+
+            string remoteVal;
+            if (TryGetConfigValue("RemoteGrid", out remoteVal))
+            {
+                ConfigRemoteName = remoteVal;
+            }
+
+            TextPadding = ParseConfigPadding("TextPadding", new float[] { 16f, 16f, 16f, 16f });
+            TextScale = Math.Max(0.1f, Math.Min(10f, ParseConfigFloat("TextScale", 1f)));
+            ConfigScroll = ParseConfigBool("TextScroll", false);
+            ConfigSubGrids = ParseConfigBool("SubGrids", false);
+            ConfigFullList = ParseConfigBool("FullList", true);
+            ConfigHighlightDamaged = ParseConfigBool("HighlightDamaged", false);
+            ConfigPerfLog = ParseConfigBool("PerfLog", false);
+            ConfigStorageType = ParseConfigStorageType("StorageType", 1);
+            ConfigOreIngotType = ParseConfigOreIngotType("OreIngotType", 1);
+            _configGroupsKey = ConfigGroups.Count > 0 ? string.Join(",", ConfigGroups) : "";
+            ApplyLayout();
+
+            EnsureConfigOptions(tb);
+        }
+
+        /// <summary>
+        /// Parses the "@region Name ... @end region" sections of CustomData into
+        /// a region -> (option -> value) map. Shared by the apps (LoadConfig) and
+        /// the terminal controls (AppTerminalControls). First value per option
+        /// wins, comments and unlabeled lines are skipped.
+        /// </summary>
+        static Dictionary<string, Dictionary<string, string>> ParseConfigRegions(string data)
+        {
+            var regions = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+            if (string.IsNullOrEmpty(data)) return regions;
+
+            string currentRegion = null;
+            int pos = 0;
+            while (pos < data.Length)
+            {
+                int nl = data.IndexOf('\n', pos);
+                int end = nl < 0 ? data.Length : nl;
+                string line = data.Substring(pos, end - pos).Trim();
+                pos = nl < 0 ? data.Length : nl + 1;
+                if (line.Length == 0) continue;
+
+                if (line.StartsWith("@region", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentRegion = line.Substring(7).Trim();
+                    if (currentRegion.Length > 0 && !regions.ContainsKey(currentRegion))
+                        regions[currentRegion] = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    continue;
+                }
+
+                if (line.StartsWith("@end", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentRegion = null;
+                    continue;
+                }
+
+                if (line[0] == '#' || line[0] == ';') continue;
+                if (currentRegion == null) continue;
+
+                int idx = line.IndexOf(':');
+                if (idx <= 0) continue;
+                string key = line.Substring(0, idx).Trim();
+                string value = line.Substring(idx + 1).Trim();
+
+                Dictionary<string, string> dict;
+                if (regions.TryGetValue(currentRegion, out dict))
+                {
+                    if (!dict.ContainsKey(key)) dict[key] = value;
+                }
+            }
+            return regions;
+        }
+
+        /// <summary>Reads an option for the given app region (the app's own
+        /// region first, then DEFAULT), used by the terminal controls to show
+        /// the effective value in the block's options menu.</summary>
+        public static string ReadConfigValue(MyTerminalBlock tb, string region, string key)
+        {
+            if (tb == null || string.IsNullOrEmpty(key)) return null;
+            var regions = ParseConfigRegions(tb.CustomData ?? "");
+            Dictionary<string, string> dict;
+            string value;
+            if (!string.IsNullOrEmpty(region) && regions.TryGetValue(region, out dict) && dict.TryGetValue(key, out value))
+                return value;
+            if (regions.TryGetValue("DEFAULT", out dict) && dict.TryGetValue(key, out value))
+                return value;
+            return null;
+        }
+
+        /// <summary>Writes an option into the given app region of CustomData,
+        /// creating the "@region ... @end region" block when it does not exist
+        /// yet. Existing options are replaced in place, new ones are inserted
+        /// before the region's @end marker.</summary>
+        public static void WriteConfigValue(MyTerminalBlock tb, string region, string key, string value)
+        {
+            if (tb == null || string.IsNullOrEmpty(region) || string.IsNullOrEmpty(key)) return;
+            string data = tb.CustomData ?? "";
+            string[] lines = data.Split('\n');
+
+            int regionStart = -1;
+            int regionEnd = -1;
+            string cur = null;
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (line.StartsWith("@region", StringComparison.OrdinalIgnoreCase))
+                {
+                    cur = line.Substring(7).Trim();
+                    if (regionStart < 0 && string.Equals(cur, region, StringComparison.OrdinalIgnoreCase))
+                        regionStart = i;
+                }
+                else if (line.StartsWith("@end", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (regionStart >= 0 && regionEnd < 0 && string.Equals(cur, region, StringComparison.OrdinalIgnoreCase))
+                        regionEnd = i;
+                    cur = null;
+                }
+            }
+
+            string entry = key + ": " + value;
+            if (regionStart < 0)
+            {
+                string block = "@region " + region + "\n" + entry + "\n@end region";
+                tb.CustomData = data.TrimEnd().Length == 0 ? block : data.TrimEnd() + "\n\n" + block;
+                return;
+            }
+
+            int insertAt = regionEnd >= 0 ? regionEnd : lines.Length;
+            bool replaced = false;
+            for (int i = regionStart + 1; i < insertAt; i++)
+            {
+                string t = lines[i].Trim();
+                if (t.Length == 0 || t[0] == '#' || t[0] == ';') continue;
+                int idx = t.IndexOf(':');
+                if (idx <= 0) continue;
+                if (string.Equals(t.Substring(0, idx).Trim(), key, StringComparison.OrdinalIgnoreCase))
+                {
+                    lines[i] = entry;
+                    replaced = true;
+                    break;
+                }
+            }
+
+            if (!replaced)
+            {
+                var newLines = new List<string>(lines);
+                newLines.Insert(insertAt, entry);
+                lines = newLines.ToArray();
+            }
+            tb.CustomData = string.Join("\n", lines);
+        }
+
+        /// <summary>
+        /// Looks up a configuration value, checking the app-specific region first,
+        /// then the app class name region, and finally falling back to the DEFAULT region.
+        /// </summary>
+        bool TryGetConfigValue(string key, out string value)
+        {
+            Dictionary<string, string> appDict;
+            if (AppRegionName != null && _regionValues.TryGetValue(AppRegionName, out appDict) && appDict.TryGetValue(key, out value))
+                return true;
+            if (_regionValues.TryGetValue(GetType().Name, out appDict) && appDict.TryGetValue(key, out value))
+                return true;
+            if (_regionValues.TryGetValue("DEFAULT", out appDict) && appDict.TryGetValue(key, out value))
+                return true;
+
+            value = null;
+            return false;
+        }
+
+        /// <summary>
+        /// Ensures the DEFAULT region has all known options and ensures all known app
+        /// regions exist as empty @region ... @end region blocks.
+        /// </summary>
+        void EnsureConfigOptions(MyTerminalBlock tb)
+        {
+            string data = tb.CustomData ?? "";
+            if (data.IndexOf("@region DEFAULT", StringComparison.OrdinalIgnoreCase) < 0)
+            {
+                tb.CustomData = (data.Length > 0 ? data.TrimEnd() + "\n\n" : "") + ConfigTemplate;
+                return;
+            }
+
+            Dictionary<string, string> defaultDict;
+            _regionValues.TryGetValue("DEFAULT", out defaultDict);
+
+            string missingInDefault = "";
+            for (int i = 0; i < DefaultOptionKeys.Length; i++)
+            {
+                string key = DefaultOptionKeys[i];
+                if (defaultDict == null || !defaultDict.ContainsKey(key))
+                {
+                    missingInDefault += "\n" + key + ": " + DefaultOptionDefaults[i];
+                }
+            }
+
+            bool modified = false;
+            if (missingInDefault.Length > 0)
+            {
+                int defIdx = data.IndexOf("@region DEFAULT", StringComparison.OrdinalIgnoreCase);
+                if (defIdx >= 0)
+                {
+                    int endIdx = data.IndexOf("@end", defIdx, StringComparison.OrdinalIgnoreCase);
+                    if (endIdx >= 0)
+                    {
+                        data = data.Substring(0, endIdx).TrimEnd() + missingInDefault + "\n" + data.Substring(endIdx);
+                        modified = true;
+                    }
+                }
+            }
+
+            for (int i = 0; i < KnownAppRegions.Length; i++)
+            {
+                string regionName = KnownAppRegions[i];
+                if (data.IndexOf("@region " + regionName, StringComparison.OrdinalIgnoreCase) < 0)
+                {
+                    data = data.TrimEnd() + "\n\n@region " + regionName + "\n@end region";
+                    modified = true;
+                }
+            }
+
+            if (modified)
+            {
+                tb.CustomData = data;
+                _lastCustomData = data;
+            }
+        }
+
+        float[] ParseConfigPadding(string key, float[] fallback)
+        {
+            string value;
+            if (!TryGetConfigValue(key, out value)) return (float[])fallback.Clone();
+            if (string.IsNullOrWhiteSpace(value)) return (float[])fallback.Clone();
+
+            string cleaned = value.Trim();
+            if (cleaned.StartsWith("[") && cleaned.EndsWith("]"))
+                cleaned = cleaned.Substring(1, cleaned.Length - 2);
+
+            string[] parts = cleaned.Split(new char[] { ',', ';', ' ', '\t' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) return (float[])fallback.Clone();
+
+            float[] parsed = new float[parts.Length];
+            for (int i = 0; i < parts.Length; i++)
+            {
+                float val;
+                if (!float.TryParse(parts[i].Trim(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out val))
+                    return (float[])fallback.Clone();
+                parsed[i] = Math.Max(0f, Math.Min(512f, val));
+            }
+
+            if (parsed.Length >= 4)
+                return new float[] { parsed[0], parsed[1], parsed[2], parsed[3] };
+            if (parsed.Length == 1)
+                return new float[] { parsed[0], parsed[0], parsed[0], parsed[0] };
+            if (parsed.Length == 2)
+                return new float[] { parsed[0], parsed[0], parsed[1], parsed[1] };
+
+            return (float[])fallback.Clone();
+        }
+
+        float ParseConfigFloat(string key, float fallback)
+        {
+            string value;
+            if (!TryGetConfigValue(key, out value)) return fallback;
+            float result;
+            if (float.TryParse(value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out result))
+                return result;
+            return fallback;
+        }
+
+        bool ParseConfigBool(string key, bool fallback)
+        {
+            string value;
+            if (!TryGetConfigValue(key, out value)) return fallback;
+            bool result;
+            if (bool.TryParse(value, out result)) return result;
+            return fallback;
+        }
+
+        int ParseConfigStorageType(string key, int fallback)
+        {
+            string value;
+            if (!TryGetConfigValue(key, out value)) return fallback;
+            value = value.Trim();
+            if (value.Equals("1", StringComparison.OrdinalIgnoreCase) || value.Equals("both", StringComparison.OrdinalIgnoreCase) || value.Equals("all", StringComparison.OrdinalIgnoreCase))
+                return 1;
+            if (value.Equals("2", StringComparison.OrdinalIgnoreCase) || value.Equals("kg", StringComparison.OrdinalIgnoreCase) || value.Equals("mass", StringComparison.OrdinalIgnoreCase) || value.Equals("weight", StringComparison.OrdinalIgnoreCase))
+                return 2;
+            if (value.Equals("3", StringComparison.OrdinalIgnoreCase) || value.Equals("l", StringComparison.OrdinalIgnoreCase) || value.Equals("liter", StringComparison.OrdinalIgnoreCase) || value.Equals("liters", StringComparison.OrdinalIgnoreCase) || value.Equals("vol", StringComparison.OrdinalIgnoreCase) || value.Equals("volume", StringComparison.OrdinalIgnoreCase))
+                return 3;
+            int result;
+            if (int.TryParse(value, out result) && result >= 1 && result <= 3)
+                return result;
+            return fallback;
+        }
+
+        int ParseConfigOreIngotType(string key, int fallback)
+        {
+            string value;
+            if (!TryGetConfigValue(key, out value)) return fallback;
+            value = value.Trim();
+            if (value.Equals("1", StringComparison.OrdinalIgnoreCase) || value.Equals("both", StringComparison.OrdinalIgnoreCase) || value.Equals("all", StringComparison.OrdinalIgnoreCase))
+                return 1;
+            if (value.Equals("2", StringComparison.OrdinalIgnoreCase) || value.Equals("ores", StringComparison.OrdinalIgnoreCase) || value.Equals("ore", StringComparison.OrdinalIgnoreCase))
+                return 2;
+            if (value.Equals("3", StringComparison.OrdinalIgnoreCase) || value.Equals("ingots", StringComparison.OrdinalIgnoreCase) || value.Equals("ingot", StringComparison.OrdinalIgnoreCase))
+                return 3;
+            int result;
+            if (int.TryParse(value, out result) && result >= 1 && result <= 3)
+                return result;
+            return fallback;
+        }
+
+        /// <summary>Scroll position for the given list slot that overflows the screen
+        /// (TextScroll). Returns the first index to draw; advances one row per
+        /// update and wraps around. Always 0 when the whole list fits or
+        /// scrolling is disabled. Apps with several list groups use one slot
+        /// per group so each scrolls independently.</summary>
+        protected int ScrollStart(int slot, int total, int maxRows)
+        {
+            if (!ConfigScroll || total <= maxRows)
+            {
+                ScrollPos[slot] = 0;
+                ScrollShown[slot] = 0;
+                return 0;
+            }
+            ScrollShown[slot] = ScrollPos[slot];
+            ScrollPos[slot]++;
+            if (ScrollPos[slot] > total - maxRows) ScrollPos[slot] = 0;
+            return ScrollShown[slot];
+        }
+
+        /// <summary>Rows band height for each group when splitting a list area evenly
+        /// between several groups (headers and gaps are accounted for).</summary>
+        protected float ListGroupHeight(float totalHeight, int groups, float headerH, float gap)
+        {
+            if (groups <= 0) return 0f;
+            return (totalHeight - groups * headerH - (groups - 1) * gap) / groups;
+        }
+
+        /// <summary>Top of group i in an evenly split list area.</summary>
+        protected float ListGroupTop(float areaTop, int i, float groupH, float headerH, float gap)
+        {
+            return areaTop + i * (groupH + headerH + gap);
+        }
+
+        /// <summary>
+        /// Draws one list group: optional header, its scrolled rows and its own
+        /// scroll bar. drawRow(index, y) renders the row for the given index at y.
+        /// Returns how many rows were drawn.
+        /// </summary>
+        protected int DrawListGroup(MySpriteDrawFrame frame, int slot, string header, int total,
+            float groupTop, float headerH, float groupH, float rowH, Action<int, float> drawRow)
+        {
+            float rowsTop = groupTop;
+            if (header != null && header.Length > 0)
+            {
+                AddText(frame, header, new Vector2(Left, groupTop), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                rowsTop = groupTop + headerH;
+            }
+            int maxRows = Math.Max(0, (int)(groupH / rowH));
+            int start = ScrollStart(slot, total, maxRows);
+            int drawn = 0;
+            for (int i = start; i < total && drawn < maxRows; i++)
+                drawRow(i, rowsTop + drawn++ * rowH);
+            DrawScrollBar(frame, slot, total, maxRows, rowsTop, rowsTop + groupH);
+            return drawn;
+        }
+
+        /// <summary>Draws a small scroll bar on the right showing how far the
+        /// given list slot has scrolled. No-op when scrolling is off or the
+        /// whole list fits.</summary>
+        protected void DrawScrollBar(MySpriteDrawFrame frame, int slot, int total, int maxRows, float trackTop, float trackBottom)
+        {
+            if (!ConfigScroll || total <= maxRows || maxRows <= 0 || trackBottom <= trackTop) return;
+
+            float x = Math.Min(Right + 4f * S, m_size.X - 8f * S);
+            float trackH = trackBottom - trackTop;
+            float thumbH = Math.Max(8f * S, trackH * maxRows / total);
+            float frac = (float)ScrollShown[slot] / (total - maxRows);
+            float thumbY = trackTop + (trackH - thumbH) * frac;
+
+            frame.Add(Square("SquareSimple", new Vector2(x, (trackTop + trackBottom) / 2f), new Vector2(1.5f * S, trackH), new Color(60, 70, 85)));
+            frame.Add(Square("SquareSimple", new Vector2(x, thumbY + thumbH / 2f), new Vector2(3.5f * S, thumbH), new Color(150, 160, 175)));
+        }
+
+        /// <summary>Applies TextPadding ([UP, DOWN, LEFT, RIGHT]) and TextScale to the layout. TextScale is folded
+        /// into S so every element (text, icons, bars and spacing) scales and shifts
+        /// together. Top/Bottom are in content space: everything drawn via
+        /// AddText/Square is shifted down by Top, so the visible bottom edge of
+        /// content = Bottom + Top.</summary>
+        void ApplyLayout()
+        {
+            S = Math.Max(0.75f, Math.Min(m_scale.X, m_scale.Y)) * TextScale;
+            float padUp = TextPadding != null && TextPadding.Length > 0 ? TextPadding[0] : 16f;
+            float padDown = TextPadding != null && TextPadding.Length > 1 ? TextPadding[1] : 16f;
+            float padLeft = TextPadding != null && TextPadding.Length > 2 ? TextPadding[2] : 16f;
+            float padRight = TextPadding != null && TextPadding.Length > 3 ? TextPadding[3] : 16f;
+
+            Mx = padLeft * S;
+            Top = padUp * S;
+            Bottom = m_size.Y - (padUp + padDown) * S;
+            Left = padLeft * S;
+            Right = m_size.X - padRight * S;
+            Cx = (Left + Right) / 2f;
+        }
+
+        /// <summary>Keeps only blocks that belong to one of the configured groups.
+        /// Blocks can only be in a terminal group when they have a fat block.</summary>
+        void ApplyGroupFilter()
+        {
+            if (ConfigGroups.Count == 0) return;
+            if (MyAPIGateway.TerminalActionsHelper == null) return;
+
+            var grid = _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+            IMyGridTerminalSystem ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+            if (ts == null) return;
+
+            _groupIds.Clear();
+            _blockGroups.Clear();
+            ts.GetBlockGroups(_blockGroups);
+
+            for (int i = 0; i < _blockGroups.Count; i++)
+            {
+                IMyBlockGroup g = _blockGroups[i];
+                if (g == null) continue;
+                bool match = false;
+                for (int k = 0; k < ConfigGroups.Count; k++)
+                {
+                    if (string.Equals(g.Name, ConfigGroups[k], StringComparison.OrdinalIgnoreCase))
+                    {
+                        match = true;
+                        break;
+                    }
+                }
+                if (!match) continue;
+
+                _groupBlocks.Clear();
+                g.GetBlocks(_groupBlocks);
+                for (int k = 0; k < _groupBlocks.Count; k++)
+                {
+                    if (_groupBlocks[k] != null) _groupIds.Add(_groupBlocks[k].EntityId);
+                }
+            }
+
+            if (_groupIds.Count == 0)
+            {
+                GridBlocks.Clear();
+                TerminalBlocks.Clear();
+                return;
+            }
+            GridBlocks.RemoveAll(b => b.FatBlock == null || !_groupIds.Contains(b.FatBlock.EntityId));
+            TerminalBlocks.RemoveAll(b => !_groupIds.Contains(b.EntityId));
+        }
+
+        protected static string BlockName(VRage.Game.ModAPI.IMyCubeBlock block)
+        {
+            MyTerminalBlock tb = block as MyTerminalBlock;
+            return tb != null ? tb.CustomName : "";
+        }
+
+        protected void DrawBackground(MySpriteDrawFrame frame)
+        {
+            frame.Add(Square("SquareSimple", new Vector2(Cx, m_size.Y / 2f), m_size, BgColor, false));
+        }
+
+        protected void DrawHeader(MySpriteDrawFrame frame, string title, string subtitle, string icon, Color iconColor)
+        {
+            float iconOffset = Math.Max(90f, title.Length * 7.5f) * S;
+            frame.Add(Icon(icon, new Vector2(Cx - iconOffset, 18f * S), 22f * S, iconColor));
+            AddText(frame, title, new Vector2(Cx, 8f * S), 0.85f * S, FgColor, TextAlignment.CENTER);
+            AddText(frame, subtitle, new Vector2(Cx, 34f * S), 0.48f * S, new Color(140, 145, 155), TextAlignment.CENTER);
+        }
+
+        /// <summary>Standard app screen start: opens the frame, draws the
+        /// background and the title header. Keep the returned frame in a
+        /// using block - Dispose ends the frame.</summary>
+        protected MySpriteDrawFrame BeginAppFrame(string title, string subtitle, string icon, Color iconColor)
+        {
+            var frame = Surface.DrawFrame();
+            DrawBackground(frame);
+            DrawHeader(frame, title, subtitle, icon, iconColor);
+            return frame;
+        }
+
+        /// <summary>Shows the standard "REMOTE GRID NOT FOUND" state when the
+        /// scan result is null. Returns true when the caller should return.</summary>
+        protected bool GuardRemoteGrid(MySpriteDrawFrame frame, object scan)
+        {
+            if (scan != null) return false;
+            DrawEmpty(frame, "REMOTE GRID NOT FOUND");
+            return true;
+        }
+
+        /// <summary>Standard summary row: "LABEL (count)" left, value right, a
+        /// fill bar underneath. Used by the breakdown sections.</summary>
+        protected void DrawCategoryRow(MySpriteDrawFrame frame, string label, string icon, int count, string valueText, float ratio, Color color, float y)
+        {
+            frame.Add(Icon(icon, new Vector2(Left + 10f * S, y + 7f * S), 18f * S, new Color(200, 210, 225)));
+            AddText(frame, $"{label} ({count})", new Vector2(Left + 26f * S, y), 0.46f * S, count > 0 ? FgColor : new Color(110, 115, 125), TextAlignment.LEFT);
+            AddText(frame, valueText, new Vector2(Right, y), 0.46f * S, color, TextAlignment.RIGHT);
+
+            RectangleF bar = new RectangleF(new Vector2(Left, y + 15f * S), new Vector2(Right - Left, 5f * S));
+            DrawBar(frame, bar, ratio, color);
+        }
+
+        /// <summary>Standard list row: icon left, label and value on the top
+        /// line, thin fill bar underneath. hasStock=false dims everything and
+        /// darkens the bar (used for zero-stock entries). All apps use this
+        /// layout so coordinates stay consistent.</summary>
+        protected void DrawProgressRow(MySpriteDrawFrame frame, float y, string icon, string label, string value,
+            float ratio, Color barColor, bool hasStock = true, Color? textColor = null, Color? valueColor = null)
+        {
+            Color iconColor = hasStock ? new Color(200, 210, 225) : new Color(100, 105, 115);
+            Color labelColor = textColor ?? (hasStock ? FgColor : new Color(110, 115, 125));
+            Color valColor = valueColor ?? (hasStock ? new Color(170, 175, 185) : new Color(110, 115, 125));
+            Color fillColor = hasStock ? barColor : new Color(60, 70, 85);
+
+            frame.Add(Icon(icon, new Vector2(Left + 10f * S, y + 5f * S), 16f * S, iconColor));
+            AddText(frame, label, new Vector2(Left + 24f * S, y), 0.44f * S, labelColor, TextAlignment.LEFT);
+            AddText(frame, value, new Vector2(Right, y), 0.44f * S, valColor, TextAlignment.RIGHT);
+
+            RectangleF bar = new RectangleF(new Vector2(Left + 24f * S, y + 16f * S), new Vector2(Right - Left - 24f * S, 4f * S));
+            DrawBar(frame, bar, ratio, fillColor);
+        }
+
+        protected void DrawDivider(MySpriteDrawFrame frame, float y)
+        {
+            frame.Add(Square("SquareSimple", new Vector2(Cx, y * S), new Vector2(Right - Left, 1.5f * S), new Color(60, 70, 85)));
+        }
+
+        protected void DrawBar(MySpriteDrawFrame frame, RectangleF bar, float ratio, Color color)
+        {
+            ratio = Math.Max(0f, Math.Min(1f, ratio));
+
+            frame.Add(Square("SquareSimple", bar.Center, bar.Size, new Color(22, 26, 36)));
+
+            Vector2 fillSize = new Vector2(bar.Size.X * ratio, bar.Size.Y);
+            if (fillSize.X > 0.5f)
+                frame.Add(Square("SquareSimple", new Vector2(bar.X + fillSize.X / 2f, bar.Center.Y), fillSize, color));
+
+            frame.Add(Square("SquareHollow", bar.Center, bar.Size, new Color(80, 90, 105)));
+        }
+
+        protected void DrawCenterFlowBar(MySpriteDrawFrame frame, RectangleF bar, float netMW, float maxMW)
+        {
+            frame.Add(Square("SquareSimple", bar.Center, bar.Size, new Color(22, 26, 36)));
+            frame.Add(Square("SquareSimple", new Vector2(bar.Center.X, bar.Center.Y), new Vector2(2f, bar.Size.Y), new Color(120, 130, 150)));
+
+            if (maxMW > 0.0001f)
+            {
+                float halfWidth = bar.Size.X / 2f;
+                float ratio = Math.Max(-1f, Math.Min(1f, netMW / maxMW));
+
+                if (Math.Abs(ratio) > 0.001f)
+                {
+                    float fillWidth = Math.Abs(ratio) * halfWidth;
+                    Color color;
+                    Vector2 fillCenter;
+                    if (ratio < 0f)
+                    {
+                        color = new Color(230, 60, 50);
+                        fillCenter = new Vector2(bar.Center.X - fillWidth / 2f, bar.Center.Y);
+                    }
+                    else
+                    {
+                        color = new Color(50, 210, 90);
+                        fillCenter = new Vector2(bar.Center.X + fillWidth / 2f, bar.Center.Y);
+                    }
+                    frame.Add(Square("SquareSimple", fillCenter, new Vector2(fillWidth, bar.Size.Y), color));
+                }
+            }
+
+            frame.Add(Square("SquareHollow", bar.Center, bar.Size, new Color(80, 90, 105)));
+        }
+
+        protected void AddText(MySpriteDrawFrame frame, string text, Vector2 position, float size, Color color, TextAlignment alignment)
+        {
+            frame.Add(new MySprite
+            {
+                Type = SpriteType.TEXT,
+                Data = text,
+                Position = new Vector2(position.X, position.Y + Top),
+                RotationOrScale = size,
+                Color = color,
+                Alignment = alignment,
+                FontId = "White"
+            });
+        }
+
+        protected void DrawEmpty(MySpriteDrawFrame frame, string message)
+        {
+            AddText(frame, message, new Vector2(Cx, m_size.Y / 2f - Top), 0.55f * S, FgColor, TextAlignment.CENTER);
+        }
+
+        /// <summary>Draws an overflow indicator ("+N MORE") just above the bottom padding.</summary>
+        protected void DrawMore(MySpriteDrawFrame frame, string text)
+        {
+            AddText(frame, text, new Vector2(Cx, Bottom - 18f * S), 0.46f * S, new Color(140, 145, 155), TextAlignment.CENTER);
+        }
+
+        /// <summary>Adds a sprite, shifted down by the top padding. Layout sprites
+        /// (background) can opt out via shiftY.</summary>
+        protected MySprite Square(string spriteId, Vector2 position, Vector2 size, Color color, bool shiftY = true)
+        {
+            return new MySprite
+            {
+                Type = SpriteType.TEXTURE,
+                Data = spriteId,
+                Position = shiftY ? new Vector2(position.X, position.Y + Top) : position,
+                Size = size,
+                Color = color,
+                Alignment = TextAlignment.CENTER
+            };
+        }
+
+        /// <summary>Adds an icon sprite (size already includes the scaled S).</summary>
+        protected MySprite Icon(string spriteId, Vector2 position, float size, Color color)
+        {
+            return Square(spriteId, position, new Vector2(size), color);
+        }
+
+        protected static Color BarColor(float ratio)
+        {
+            if (ratio > 0.5f) return new Color(60, 200, 90);
+            if (ratio > 0.25f) return new Color(230, 200, 60);
+            return new Color(220, 70, 60);
+        }
+
+        protected static string FormatVolume(float liters)
+        {
+            if (liters >= 1000000f) return $"{liters / 1000000f:0.00} ML";
+            if (liters >= 1000f) return $"{liters / 1000f:0.0} kL";
+            return $"{liters:0} L";
+        }
+
+        protected static string FormatMass(float kg)
+        {
+            return $"{kg:0} kg";
+        }
+
+        protected static string FormatStorage(float liters, float kg, int storageType)
+        {
+            switch (storageType)
+            {
+                case 2:
+                    return FormatMass(kg);
+                case 3:
+                    return FormatVolume(liters);
+                case 1:
+                default:
+                    return $"{FormatMass(kg)} / {FormatVolume(liters)}";
+            }
+        }
+
+        protected string FormatStorage(float liters, float kg)
+        {
+            return FormatStorage(liters, kg, ConfigStorageType);
+        }
+
+        protected static string Truncate(string name, int max)
+        {
+            if (name.Length > max) name = name.Substring(0, max);
+            return name;
+        }
+
+        /// <summary>
+        /// Returns a guaranteed-to-render icon for the given block: the sprite of
+        /// its primary component (e.g. armor -> SteelPlate, reactor -> Reactor).
+        /// Block definition icons are texture paths that do not render on text
+        /// surfaces, so only sprite library entries are used here.
+        /// </summary>
+        protected static string BlockIcon(MySlimBlock slim, string fallback)
+        {
+            Sandbox.Definitions.MyCubeBlockDefinition def = slim.BlockDefinition as Sandbox.Definitions.MyCubeBlockDefinition;
+            if (def != null && def.Components != null && def.Components.Length > 0)
+            {
+                string subtype = def.Components[0].Definition.Id.SubtypeId.ToString();
+                if (SpriteLookup.ComponentSet.Contains(subtype))
+                    return "MyObjectBuilder_Component/" + subtype;
+            }
+            return fallback;
+        }
+
+        /// <summary>Formats a duration in hours as "Xh YYm" (or "--" when not meaningful).</summary>
+        protected static string FormatTimeHours(float hours)
+        {
+            if (float.IsNaN(hours) || float.IsInfinity(hours) || hours < 0f || hours >= 999f) return "--";
+            return $"{Math.Floor(hours):0}h {((hours - Math.Floor(hours)) * 60f):00}m";
+        }
+
+        /// <summary>Compact duration: "3h12m" (or "45m" under an hour, or "--"
+        /// when not meaningful).</summary>
+        protected static string FormatEta(float hours)
+        {
+            if (float.IsNaN(hours) || float.IsInfinity(hours) || hours < 0f || hours >= 100f) return "--";
+            int h = (int)hours;
+            int m = (int)((hours - h) * 60f);
+            if (h < 1) return m + "m";
+            return h + "h" + m.ToString("00") + "m";
+        }
+
+        /// <summary>Subtype string to a display name: underscores to spaces,
+        /// length clamped to the standard row width.</summary>
+        protected static string FormatItemName(string subtype)
+        {
+            string name = subtype.Replace('_', ' ');
+            if (name.Length > 24) name = name.Substring(0, 24);
+            return name;
+        }
+
+        /// <summary>Zero-fills a "TypeId/Subtype"-keyed dictionary with every
+        /// known subtype that's missing, so FullList mode shows all types.</summary>
+        protected static void EnsureFullListEntries(Dictionary<string, float> target, List<string> known, string typeId)
+        {
+            string prefix = typeId + "/";
+            for (int i = 0; i < known.Count; i++)
+            {
+                string key = prefix + known[i];
+                if (!target.ContainsKey(key)) target[key] = 0f;
+            }
+        }
+
+        /// <summary>Zero-fills a subtype-keyed dictionary with every known
+        /// subtype that's missing, so FullList mode shows all types.</summary>
+        protected static void EnsureFullListEntries(Dictionary<string, int> target, List<string> known)
+        {
+            for (int i = 0; i < known.Count; i++)
+            {
+                string subtype = known[i];
+                if (!target.ContainsKey(subtype)) target[subtype] = 0;
+            }
+        }
+
+        /// <summary>Aggregated battery power state, shared by PowerApp and
+        /// DockedApp.</summary>
+        protected struct BatterySummary
+        {
+            public float Stored, Max, In, Out, MaxOut;
+
+            public float NetFlow { get { return In - Out; } }
+        }
+
+        /// <summary>Adds one battery's power state to the summary.</summary>
+        protected static void AccumulateBattery(ref BatterySummary s, Sandbox.ModAPI.IMyBatteryBlock b)
+        {
+            s.Stored += (float)b.CurrentStoredPower;
+            s.Max += (float)b.MaxStoredPower;
+            s.In += (float)b.CurrentInput;
+            s.Out += (float)b.CurrentOutput;
+            s.MaxOut += (float)b.MaxOutput;
+        }
+
+        /// <summary>Item volume (L per unit) cached per "TypeId/Subtype" key.</summary>
+        protected static readonly Dictionary<string, float> ItemVolumeCache = new Dictionary<string, float>();
+
+        /// <summary>Item mass (kg per unit) cached per "TypeId/Subtype" key.</summary>
+        protected static readonly Dictionary<string, float> ItemMassCache = new Dictionary<string, float>();
+
+        static readonly Dictionary<MyStringHash, bool> _gasTypeCache = new Dictionary<MyStringHash, bool>();
+
+        /// <summary>True when the given block definition subtype is a hydrogen
+        /// tank. The subtype string is already stored inside the MyStringHash,
+        /// so the check runs once per subtype and is cached afterwards - no
+        /// per-scan string building or scanning.</summary>
+        protected static bool IsHydrogenTank(MyStringHash subtype)
+        {
+            bool isH2;
+            if (!_gasTypeCache.TryGetValue(subtype, out isH2))
+            {
+                isH2 = subtype.ToString().IndexOf("Hydrogen", StringComparison.Ordinal) >= 0;
+                _gasTypeCache[subtype] = isH2;
+            }
+            return isH2;
+        }
+
+        /// <summary>True when the given gas tank block is a hydrogen tank
+        /// (else it is treated as an oxygen tank).</summary>
+        protected static bool IsHydrogenTank(Sandbox.ModAPI.IMyGasTank tank)
+        {
+            return IsHydrogenTank(MyStringHash.GetOrCompute(tank.BlockDefinition.SubtypeId.ToString()));
+        }
+
+        /// <summary>
+        /// Returns the scan result for this display's scan grid, shared by ALL
+        /// displays of the same app type on that grid: the expensive
+        /// block/inventory pass runs once per grid per update window
+        /// (~1.67 s) instead of once per display. Displays with different
+        /// configs (RemoteGrid, Groups, SubGrids, FullList) get their own
+        /// cache entries. Returns default(T) when a configured RemoteGrid
+        /// can't be found - check for null in the app and show an error.
+        /// scan() must only gather data, never draw.
+        /// </summary>
+        protected T GetGridScan<T>(Func<T> scan) where T : class, new()
+        {
+            long window = Window();
+            _scanGrid = ResolveScanGrid(window);
+            if (_scanGrid == null) return default(T);
+
+            var grid = _scanGrid;
+            long key = grid.EntityId;
+            if (ConfigSubGrids)
+            {
+                while (grid.Parent != null) grid = (VRage.Game.ModAPI.IMyCubeGrid)grid.Parent;
+                key = grid.EntityId;
+            }
+            key = key * 397 + (ConfigRemoteName.Length > 0 ? 1 : 0);
+            key = key * 397 + (ConfigFullList ? 1 : 0);
+            key = key * 397 + ConfigStorageType;
+            if (ConfigGroups.Count > 0)
+                key = key * 397 + _configGroupsKey.GetHashCode();
+
+            var map = ScanCache<T>.Map;
+            CacheEntry<T> entry;
+            if (map.TryGetValue(key, out entry) && entry.Window == window)
+                return entry.Data;
+
+            var sw = Stopwatch.StartNew();
+            T data = scan();
+            sw.Stop();
+            Perf.RecordScan(GetType().Name, sw.Elapsed.TotalMilliseconds, _lastScanBlocks);
+            map[key] = ScanCache<T>.RentEntry(window, data);
+
+            if (map.Count > 64)
+            {
+                var stale = ScanCache<T>.Stale;
+                stale.Clear();
+                foreach (var kv in map)
+                    if (kv.Value.Window != window) stale.Add(kv.Key);
+                for (int i = 0; i < stale.Count; i++)
+                {
+                    CacheEntry<T> ev;
+                    if (map.TryGetValue(stale[i], out ev))
+                    {
+                        ScanCache<T>.Return(ev.Data);
+                        ScanCache<T>.ReturnEntry(ev);
+                        map.Remove(stale[i]);
+                    }
+                }
+                stale.Clear();
+            }
+            return data;
+        }
+
+        /// <summary>Returns a cleared scan container from the per-app-type pool,
+        /// or a fresh one. Apps must fill every field of the returned object.</summary>
+        protected T RentScan<T>() where T : class, new()
+        {
+            return ScanCache<T>.Rent();
+        }
+
+        /// <summary>Returns the grid to scan: the remote grid when RemoteGrid is
+        /// configured, otherwise the LCD's own grid. Null when the remote grid
+        /// can't be found.</summary>
+        VRage.Game.ModAPI.IMyCubeGrid ResolveScanGrid(long window)
+        {
+            if (ConfigRemoteName.Length == 0)
+                return (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+
+            long id = ResolveRemoteGridId(ConfigRemoteName, window);
+            if (id == 0) return null;
+            var entity = MyAPIGateway.Entities.GetEntityById(id);
+            return entity as VRage.Game.ModAPI.IMyCubeGrid;
+        }
+
+        /// <summary>Finds the EntityId of the grid with the given name. The
+        /// result is cached per name across windows - the expensive global
+        /// entity scan only runs when the configured name changes, when a
+        /// previous lookup failed (retried periodically), or on a slow
+        /// periodic refresh. 0 means not found.</summary>
+        long ResolveRemoteGridId(string name, long window)
+        {
+            const long RefreshEvery = 30;
+            const long RetryEvery = 10;
+
+            RemoteLookup hit;
+            bool cached = _remoteLookup.TryGetValue(name, out hit);
+            if (cached && hit.Window == window)
+                return hit.EntityId;
+            if (cached)
+            {
+                long since = window - hit.Window;
+                if (hit.EntityId != 0 && since < RefreshEvery) return hit.EntityId;
+                if (hit.EntityId == 0 && since < RetryEvery) return 0;
+            }
+
+            long id = 0;
+            if (MyAPIGateway.Entities != null)
+            {
+                _entityBuffer.Clear();
+                MyAPIGateway.Entities.GetEntities(_entityBuffer);
+                foreach (var entity in _entityBuffer)
+                {
+                    var grid = entity as VRage.Game.ModAPI.IMyCubeGrid;
+                    if (grid == null) continue;
+                    if (string.Equals(grid.CustomName, name, StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(grid.DisplayName, name, StringComparison.OrdinalIgnoreCase))
+                    {
+                        id = grid.EntityId;
+                        break;
+                    }
+                }
+            }
+            _remoteLookup[name] = new RemoteLookup { Window = window, EntityId = id };
+            return id;
+        }
+    }
+
+    /// <summary>Resolved EntityId of a named remote grid for one window.</summary>
+    class RemoteLookup
+    {
+        public long Window;
+        public long EntityId;
+    }
+
+    /// <summary>Per-app update timing stats, shared by all instances of an app
+    /// type. Collects averages, extremes, histograms, update-interval jitter,
+    /// scan timing and scanned block counts.</summary>
+    public class PerfStat
+    {
+        public int Count, Scans;
+        public double SumMs, MaxMs;
+        public double MinMs = double.MaxValue;
+        public double ScanSumMs, ScanMaxMs;
+        public double ScanMinMs = double.MaxValue;
+        public double LastScanMs;
+        public double BlocksSum, PerBlockSum, PerBlockMax;
+        public double IntervalSumMs, IntervalMaxMs;
+        public int IntervalCount;
+        public readonly int[] Hist = new int[Perf.UpdateBuckets];
+        public readonly int[] ScanHist = new int[Perf.ScanBuckets];
+
+        public double AvgMs { get { return Count > 0 ? SumMs / Count : 0.0; } }
+        public double ScanAvgMs { get { return Scans > 0 ? ScanSumMs / Scans : 0.0; } }
+        public double IntervalAvgMs { get { return IntervalCount > 0 ? IntervalSumMs / IntervalCount : 0.0; } }
+        public double AvgBlocks { get { return Scans > 0 ? BlocksSum / Scans : 0.0; } }
+        public double PerBlockAvgMs { get { return Scans > 0 ? PerBlockSum / Scans : 0.0; } }
+    }
+
+    /// <summary>Per-display timing stats (one entry per LCD/block). The update
+    /// interval is measured here - it is a per-instance quantity.</summary>
+    public class InstanceStat
+    {
+        public int Count;
+        public double SumMs, MaxMs;
+        public double MinMs = double.MaxValue;
+        public double LastUpdateMs;
+        public double IntervalSumMs, IntervalMaxMs;
+        public int IntervalCount;
+        public double AvgMs { get { return Count > 0 ? SumMs / Count : 0.0; } }
+        public double IntervalAvgMs { get { return IntervalCount > 0 ? IntervalSumMs / IntervalCount : 0.0; } }
+    }
+
+    /// <summary>One recorded slow update (>= Perf.SlowMs).</summary>
+    public class SlowEvent
+    {
+        public string App, Instance;
+        public double Ms, ScanMs;
+        public string PlayTime;
+    }
+
+    /// <summary>Update timing collector. Every display update is measured;
+    /// the Performance app shows the stats live and dumps them as text.</summary>
+    public static class Perf
+    {
+        public const int UpdateBuckets = 10;
+        public const int ScanBuckets = 8;
+        public static readonly double[] UpdateBounds = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0 };
+        public static readonly double[] ScanBounds = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0 };
+        public const double SlowMs = 2.0;
+        public const int SlowCap = 50;
+
+        public static readonly Dictionary<string, PerfStat> Stats = new Dictionary<string, PerfStat>();
+        public static readonly Dictionary<string, InstanceStat> Instances = new Dictionary<string, InstanceStat>();
+        public static readonly List<SlowEvent> SlowEvents = new List<SlowEvent>();
+
+        public static void Clear()
+        {
+            Stats.Clear();
+            Instances.Clear();
+            SlowEvents.Clear();
+        }
+
+        public static void Record(string app, string instance, double ms, double playMs)
+        {
+            PerfStat s = Stat(app);
+            s.Count++;
+            s.SumMs += ms;
+            if (ms > s.MaxMs) s.MaxMs = ms;
+            if (ms < s.MinMs) s.MinMs = ms;
+            s.Hist[Bucket(UpdateBounds, ms)]++;
+
+            InstanceStat ins;
+            if (!Instances.TryGetValue(instance, out ins))
+            {
+                ins = new InstanceStat();
+                Instances[instance] = ins;
+            }
+            ins.Count++;
+            ins.SumMs += ms;
+            if (ms > ins.MaxMs) ins.MaxMs = ms;
+            if (ms < ins.MinMs) ins.MinMs = ms;
+            if (ins.LastUpdateMs > 0.0)
+            {
+                double iv = playMs - ins.LastUpdateMs;
+                ins.IntervalSumMs += iv;
+                ins.IntervalCount++;
+                if (iv > ins.IntervalMaxMs) ins.IntervalMaxMs = iv;
+                s.IntervalSumMs += iv;
+                s.IntervalCount++;
+                if (iv > s.IntervalMaxMs) s.IntervalMaxMs = iv;
+            }
+            ins.LastUpdateMs = playMs;
+
+            if (ms >= SlowMs)
+            {
+                if (SlowEvents.Count >= SlowCap)
+                {
+                    int w = 0;
+                    for (int i = 1; i < SlowEvents.Count; i++)
+                        if (SlowEvents[i].Ms < SlowEvents[w].Ms) w = i;
+                    if (SlowEvents[w].Ms >= ms) return;
+                    SlowEvents.RemoveAt(w);
+                }
+                SlowEvent e = new SlowEvent();
+                e.App = app;
+                e.Instance = instance;
+                e.Ms = ms;
+                e.ScanMs = s.LastScanMs;
+                e.PlayTime = TimeSpan.FromMilliseconds(playMs).ToString(@"hh\:mm\:ss");
+                SlowEvents.Add(e);
+            }
+        }
+
+        public static void RecordScan(string app, double ms, int blocks)
+        {
+            PerfStat s = Stat(app);
+            s.Scans++;
+            s.ScanSumMs += ms;
+            if (ms > s.ScanMaxMs) s.ScanMaxMs = ms;
+            if (ms < s.ScanMinMs) s.ScanMinMs = ms;
+            s.LastScanMs = ms;
+            s.ScanHist[Bucket(ScanBounds, ms)]++;
+            s.BlocksSum += blocks;
+            double per = blocks > 0 ? ms / blocks : 0.0;
+            s.PerBlockSum += per;
+            if (per > s.PerBlockMax) s.PerBlockMax = per;
+        }
+
+        public static int Bucket(double[] bounds, double v)
+        {
+            for (int i = 0; i < bounds.Length; i++)
+                if (v < bounds[i]) return i;
+            return bounds.Length;
+        }
+
+        static PerfStat Stat(string app)
+        {
+            PerfStat s;
+            if (!Stats.TryGetValue(app, out s))
+            {
+                s = new PerfStat();
+                Stats[app] = s;
+            }
+            return s;
+        }
+    }
+
+    /// <summary>Cached scan result for one grid and update window.</summary>
+    class CacheEntry<T>
+    {
+        public long Window;
+        public T Data;
+    }
+
+    /// <summary>Scan result containers implement this so the per-app scan pool
+    /// can clear and reuse them instead of allocating new objects every window.</summary>
+    public interface IScanData
+    {
+        void Clear();
+    }
+
+    /// <summary>One static map per app data type, so every app type keeps its
+    /// own grid cache (generic type argument makes each app a separate map).
+    /// Scan containers and cache entries are pooled: evicted entries return
+    /// their objects to the pool and new scans rent from it instead of
+    /// allocating fresh objects every window.</summary>
+    static class ScanCache<T> where T : class, new()
+    {
+        public static readonly Dictionary<long, CacheEntry<T>> Map = new Dictionary<long, CacheEntry<T>>();
+
+        /// <summary>Reused buffer for the stale-entry purge (no per-scan allocation).</summary>
+        public static readonly List<long> Stale = new List<long>();
+        static readonly List<T> _pool = new List<T>();
+        static readonly List<CacheEntry<T>> _entries = new List<CacheEntry<T>>();
+
+        /// <summary>Returns a pooled scan container (cleared via IScanData) or a fresh one.</summary>
+        public static T Rent()
+        {
+            if (_pool.Count > 0)
+            {
+                T item = _pool[_pool.Count - 1];
+                _pool.RemoveAt(_pool.Count - 1);
+                IScanData reusable = item as IScanData;
+                if (reusable != null) reusable.Clear();
+                return item;
+            }
+            return new T();
+        }
+
+        /// <summary>Pools a scan container for reuse. Only IScanData containers
+        /// are pooled - other result types just get garbage collected.</summary>
+        public static void Return(T item)
+        {
+            if (item is IScanData) _pool.Add(item);
+        }
+
+        public static CacheEntry<T> RentEntry(long window, T data)
+        {
+            if (_entries.Count > 0)
+            {
+                CacheEntry<T> entry = _entries[_entries.Count - 1];
+                _entries.RemoveAt(_entries.Count - 1);
+                entry.Window = window;
+                entry.Data = data;
+                return entry;
+            }
+            return new CacheEntry<T> { Window = window, Data = data };
+        }
+
+        public static void ReturnEntry(CacheEntry<T> entry)
+        {
+            entry.Data = default(T);
+            _entries.Add(entry);
+        }
+    }
+
+    /// <summary>
+    /// Maps production blueprint subtypes to their item sprite id, using the
+    /// known sprite list. Unknown subtypes (disassembled blocks, mod items)
+    /// fall back to a generic icon so nothing renders blank.
+    /// </summary>
+    public static class SpriteLookup
+    {
+        static readonly HashSet<string> _ammo = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "AutocannonClip", "AutomaticRifleGun_Mag_20rd", "ElitePistolMagazine", "FireworksBoxBlue", "FireworksBoxGreen",
+            "FireworksBoxPink", "FireworksBoxRainbow", "FireworksBoxRed", "FireworksBoxYellow", "FlareClip",
+            "FullAutoPistolMagazine", "LargeCalibreAmmo", "LargeRailgunAmmo", "MediumCalibreAmmo", "Missile200mm",
+            "NATO_25x184mm", "NATO_5p56x45mm", "PreciseAutomaticRifleGun_Mag_5rd", "RapidFireAutomaticRifleGun_Mag_50rd",
+            "SemiAutoPistolMagazine", "SmallRailgunAmmo", "UltimateAutomaticRifleGun_Mag_30rd"
+        };
+
+        static readonly HashSet<string> _tools = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "AdvancedHandHeldLauncherItem", "AngleGrinder2Item", "AngleGrinder3Item", "AngleGrinder4Item", "AngleGrinderItem",
+            "AutomaticRifleItem", "BasicHandHeldLauncherItem", "ElitePistolItem", "FlareGunItem", "FullAutoPistolItem",
+            "GoodAIRewardPunishmentTool", "HandDrill2Item", "HandDrill3Item", "HandDrill4Item", "HandDrillItem",
+            "PreciseAutomaticRifleItem", "RapidFireAutomaticRifleItem", "SemiAutoPistolItem", "UltimateAutomaticRifleItem",
+            "Welder2Item", "Welder3Item", "Welder4Item", "WelderItem"
+        };
+
+        static readonly HashSet<string> _consumables = new HashSet<string>(StringComparer.Ordinal)
+        {
+            "ClangCola", "CosmicCoffee", "Fruit", "InsectMeatCooked", "InsectMeatRaw", "MammalMeatCooked", "MammalMeatRaw",
+            "MealPack_BananaBeef", "MealPack_Burrito", "MealPack_Chili", "MealPack_ClangCrunchies", "MealPack_Curry",
+            "MealPack_Dumplings", "MealPack_ExpiredSlop", "MealPack_Flatbread", "MealPack_FoodPaste", "MealPack_FrontierStew",
+            "MealPack_FruitBar", "MealPack_FruitPastry", "MealPack_GardenSlaw", "MealPack_GreenPellets", "MealPack_Hardtack",
+            "MealPack_KelpCrisp", "MealPack_Lasagna", "MealPack_Ramen", "MealPack_RedPellets", "MealPack_SearedSabiroid",
+            "MealPack_Spaghetti", "MealPack_SteakDinner", "MealPack_SynthLoaf", "MealPack_Unknown", "MealPack_VeggieBurger",
+            "Medkit", "Mushrooms", "Powerkit", "RadiationKit", "Vegetables"
+        };
+
+        /// <summary>All vanilla ore subtypes with an icon in the sprite library.</summary>
+        public static readonly List<string> Ores = new List<string>
+        {
+            "Stone", "Ice", "Iron", "Gold", "Silver", "Copper", "Nickel", "Cobalt",
+            "Magnesium", "Silicon", "Uranium", "Platinum", "Scandium"
+        };
+
+        /// <summary>All vanilla ingot subtypes with an icon in the sprite library.</summary>
+        public static readonly List<string> Ingots = new List<string>
+        {
+            "Gravel", "Iron", "Gold", "Silver", "Copper", "Nickel", "Cobalt",
+            "Magnesium", "Silicon", "Uranium", "Platinum", "Scandium"
+        };
+
+        /// <summary>All vanilla component subtypes with an icon in the sprite library.</summary>
+        public static readonly List<string> Components = new List<string>
+        {
+            "BulletproofGlass", "Canvas", "Computer", "Construction", "Detector", "Display", "EngineerPlushie",
+            "EngineerPlushieSE2", "Explosives", "Girder", "GravityGenerator", "InteriorPlate", "LargeTube", "Medical",
+            "MetalGrid", "Motor", "PowerCell", "PrototechCapacitor", "PrototechCircuitry", "PrototechCoolingUnit",
+            "PrototechFrame", "PrototechMachinery", "PrototechPanel", "PrototechPropulsionUnit", "RadioCommunication",
+            "Reactor", "SabiroidPlushie", "SmallTube", "SolarCell", "SteelPlate", "Superconductor", "Thrust", "ZoneChip"
+        };
+
+        /// <summary>Same set as Components for O(1) membership checks.</summary>
+        public static readonly HashSet<string> ComponentSet = new HashSet<string>(Components, StringComparer.Ordinal);
+
+        public static string ForItem(string subtype)
+        {
+            if (_ammo.Contains(subtype)) return "MyObjectBuilder_AmmoMagazine/" + subtype;
+            if (_tools.Contains(subtype)) return "MyObjectBuilder_PhysicalGunObject/" + subtype;
+            if (_consumables.Contains(subtype)) return "MyObjectBuilder_ConsumableItem/" + subtype;
+            if (subtype == "Datapad") return "MyObjectBuilder_Datapad/Datapad";
+            if (subtype == "HydrogenBottle") return "MyObjectBuilder_GasContainerObject/HydrogenBottle";
+            if (subtype == "OxygenBottle") return "MyObjectBuilder_OxygenContainerObject/OxygenBottle";
+            if (ComponentSet.Contains(subtype)) return "MyObjectBuilder_Component/" + subtype;
+            if (subtype.Contains("Thrust")) return "MyObjectBuilder_Component/Thrust";
+            if (subtype.Contains("Computer")) return "MyObjectBuilder_Component/Computer";
+            if (subtype.Contains("Motor")) return "MyObjectBuilder_Component/Motor";
+            if (subtype.Contains("Display")) return "MyObjectBuilder_Component/Display";
+            if (subtype.Contains("Detector")) return "MyObjectBuilder_Component/Detector";
+            if (subtype.Contains("Reactor")) return "MyObjectBuilder_Component/Reactor";
+            return "MyObjectBuilder_Component/Construction";
+        }
+    }
+}
