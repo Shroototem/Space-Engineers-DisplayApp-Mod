@@ -37,17 +37,27 @@ namespace DisplayApps
         {
             try
             {
-                if (MyAPIGateway.TerminalControls == null) return;
-                IMyTerminalControls helper = MyAPIGateway.TerminalControls;
-                if (block is Sandbox.ModAPI.IMyCockpit) RegisterFor<IMyCockpit>(helper);
-                else if (block is Sandbox.ModAPI.IMyRemoteControl) RegisterFor<IMyRemoteControl>(helper);
-                else if (block is Sandbox.ModAPI.IMyTextPanel) RegisterFor<MyTextPanel>(helper);
-                else if (block is Sandbox.ModAPI.IMyProgrammableBlock) RegisterFor<IMyProgrammableBlock>(helper);
-                RepositionForBlock(block);
+                if (MyAPIGateway.TerminalControls == null || block == null) return;
+                if (block is Sandbox.ModAPI.IMyCockpit) EnsureFor<IMyCockpit>();
+                else if (block is Sandbox.ModAPI.IMyRemoteControl) EnsureFor<IMyRemoteControl>();
+                else if (block is Sandbox.ModAPI.IMyTextPanel) EnsureFor<MyTextPanel>();
+                else if (block is Sandbox.ModAPI.IMyProgrammableBlock) EnsureFor<IMyProgrammableBlock>();
             }
             catch
             {
             }
+        }
+
+        /// <summary>Registration + reposition for one block type. Called every
+        /// update of every display, so the steady state must be two cheap set
+        /// probes and no game API calls.</summary>
+        static void EnsureFor<TBlock>()
+        {
+            Type t = typeof(TBlock);
+            bool needRegister = !_registered.Contains(t);
+            if (!needRegister && _repositioned.Contains(t)) return;
+            if (needRegister) RegisterFor<TBlock>(MyAPIGateway.TerminalControls);
+            RepositionFor<TBlock>();
         }
 
         static readonly HashSet<Type> _registered = new HashSet<Type>();
@@ -148,7 +158,7 @@ namespace DisplayApps
             c.SetLimits(0f, 128f);
             c.Getter = b => ReadPadding(b, index, defaultValue);
             c.Setter = (b, v) => WritePadding(b, index, v);
-            c.Writer = (b, sb) => sb.Append(ReadPadding(b, index, defaultValue).ToString("0.#", CultureInfo.InvariantCulture) + " px");
+            c.Writer = (b, sb) => sb.Append(ReadPadding(b, index, defaultValue).ToString("0.#", CultureInfo.InvariantCulture)).Append(" px");
             c.Visible = b => AppActive(b, regions);
             _paddingSliders.Add(c);
             helper.AddControl<TBlock>(c);
@@ -187,6 +197,13 @@ namespace DisplayApps
             helper.AddControl<TBlock>(c);
         }
 
+        static readonly MyStringId _optBothKgL = MyStringId.GetOrCompute("Both (kg & L)");
+        static readonly MyStringId _optKgOnly = MyStringId.GetOrCompute("kg only");
+        static readonly MyStringId _optLOnly = MyStringId.GetOrCompute("L only");
+        static readonly MyStringId _optBoth = MyStringId.GetOrCompute("Both");
+        static readonly MyStringId _optOresOnly = MyStringId.GetOrCompute("Ores only");
+        static readonly MyStringId _optIngotsOnly = MyStringId.GetOrCompute("Ingots only");
+
         static void AddStorageType<TBlock>(IMyTerminalControls helper, string id, string title, string tooltip, string[] regions)
         {
             IMyTerminalControlCombobox c = helper.CreateControl<IMyTerminalControlCombobox, TBlock>(id);
@@ -196,9 +213,9 @@ namespace DisplayApps
             {
                 if (list == null) return;
                 list.Clear();
-                list.Add(new MyTerminalControlComboBoxItem { Key = 1L, Value = MyStringId.GetOrCompute("Both (kg & L)") });
-                list.Add(new MyTerminalControlComboBoxItem { Key = 2L, Value = MyStringId.GetOrCompute("kg only") });
-                list.Add(new MyTerminalControlComboBoxItem { Key = 3L, Value = MyStringId.GetOrCompute("L only") });
+                list.Add(new MyTerminalControlComboBoxItem { Key = 1L, Value = _optBothKgL });
+                list.Add(new MyTerminalControlComboBoxItem { Key = 2L, Value = _optKgOnly });
+                list.Add(new MyTerminalControlComboBoxItem { Key = 3L, Value = _optLOnly });
             };
             c.Getter = ReadStorageType;
             c.Setter = (b, v) => WriteValue(b, "StorageType", v.ToString());
@@ -215,9 +232,9 @@ namespace DisplayApps
             {
                 if (list == null) return;
                 list.Clear();
-                list.Add(new MyTerminalControlComboBoxItem { Key = 1L, Value = MyStringId.GetOrCompute("Both") });
-                list.Add(new MyTerminalControlComboBoxItem { Key = 2L, Value = MyStringId.GetOrCompute("Ores only") });
-                list.Add(new MyTerminalControlComboBoxItem { Key = 3L, Value = MyStringId.GetOrCompute("Ingots only") });
+                list.Add(new MyTerminalControlComboBoxItem { Key = 1L, Value = _optBoth });
+                list.Add(new MyTerminalControlComboBoxItem { Key = 2L, Value = _optOresOnly });
+                list.Add(new MyTerminalControlComboBoxItem { Key = 3L, Value = _optIngotsOnly });
             };
             c.Getter = ReadOreIngotType;
             c.Setter = (b, v) => WriteValue(b, "OreIngotType", v.ToString());
@@ -252,6 +269,8 @@ namespace DisplayApps
         static readonly Dictionary<long, SelectionRecord> _lastSelected = new Dictionary<long, SelectionRecord>();
         static readonly HashSet<Type> _repositioned = new HashSet<Type>();
 
+        static readonly List<long> _deadSelections = new List<long>();
+
         public static void RecordAppSelection(long blockId, string region, int surfaceIndex)
         {
             if (blockId == 0 || string.IsNullOrEmpty(region)) return;
@@ -259,39 +278,61 @@ namespace DisplayApps
             rec.Surface = surfaceIndex;
             rec.Region = region;
             _lastSelected[blockId] = rec;
+            _regionCacheFrame = -1;
+            if (_lastSelected.Count > 1024)
+                PruneSelections();
+        }
+
+        /// <summary>Drops records of blocks that no longer exist instead of
+        /// wiping every block's remembered selection at once. Full clear only
+        /// as a last resort when the world genuinely has 1024+ live entries.</summary>
+        static void PruneSelections()
+        {
+            var entities = MyAPIGateway.Entities;
+            if (entities != null)
+            {
+                _deadSelections.Clear();
+                foreach (var kv in _lastSelected)
+                    if (entities.GetEntityById(kv.Key) == null) _deadSelections.Add(kv.Key);
+                for (int i = 0; i < _deadSelections.Count; i++)
+                    _lastSelected.Remove(_deadSelections[i]);
+                _deadSelections.Clear();
+            }
             if (_lastSelected.Count > 1024)
                 _lastSelected.Clear();
         }
+
+        /// <summary>Reposition attempts per block type - after enough failed
+        /// tries (another mod's controls after the anchor, or no anchor found)
+        /// the type is marked done so the GetControls scan stops repeating
+        /// every update for the rest of the session.</summary>
+        static readonly Dictionary<Type, int> _repositionTries = new Dictionary<Type, int>();
+        const int RepositionMaxTries = 20;
 
         /// <summary>Moves our controls right after the block's screen/app
         /// controls (the game's per-surface "Content/Font/Script" section).
         /// Only called for a block type once a block of that type actually
         /// exists - its control list is fully built by then, and calling
         /// GetControls earlier could suppress the game's own registration.</summary>
-        public static void RepositionForBlock(MyTerminalBlock block)
-        {
-            try
-            {
-                if (block is Sandbox.ModAPI.IMyCockpit) RepositionFor<IMyCockpit>();
-                else if (block is Sandbox.ModAPI.IMyRemoteControl) RepositionFor<IMyRemoteControl>();
-                else if (block is Sandbox.ModAPI.IMyTextPanel) RepositionFor<MyTextPanel>();
-                else if (block is Sandbox.ModAPI.IMyProgrammableBlock) RepositionFor<IMyProgrammableBlock>();
-            }
-            catch
-            {
-            }
-        }
-
         static void RepositionFor<TBlock>()
         {
             try
             {
+                Type t = typeof(TBlock);
+                if (_repositioned.Contains(t)) return;
+                int tries;
+                _repositionTries.TryGetValue(t, out tries);
+                if (tries >= RepositionMaxTries)
+                {
+                    _repositioned.Add(t);
+                    return;
+                }
+                _repositionTries[t] = tries + 1;
+
                 IMyTerminalControls helper = MyAPIGateway.TerminalControls;
                 List<IMyTerminalControl> list;
                 helper.GetControls<TBlock>(out list);
                 if (list == null || list.Count == 0) return;
-
-                if (_repositioned.Contains(typeof(TBlock))) return;
 
                 int anchor = -1;
                 for (int i = 0; i < list.Count; i++)
@@ -343,9 +384,28 @@ namespace DisplayApps
         /// the screen selected in the game's own cockpit screen list, then the
         /// most recently selected app, then any single app running on the
         /// block.</summary>
+        /// <summary>One-entry per-frame memo: with the settings page open every
+        /// control getter and Visible callback resolves the region, ~30 times
+        /// per GUI frame for the same block - compute it once per frame.</summary>
+        static long _regionCacheEntity;
+        static int _regionCacheFrame = -1;
+        static string _regionCacheValue;
+
         static string CurrentRegion(MyTerminalBlock block)
         {
             if (block == null) return null;
+            int frame = MyAPIGateway.Session != null ? MyAPIGateway.Session.GameplayFrameCounter : -1;
+            if (frame >= 0 && frame == _regionCacheFrame && block.EntityId == _regionCacheEntity)
+                return _regionCacheValue;
+            string result = ResolveCurrentRegion(block);
+            _regionCacheEntity = block.EntityId;
+            _regionCacheFrame = frame;
+            _regionCacheValue = result;
+            return result;
+        }
+
+        static string ResolveCurrentRegion(MyTerminalBlock block)
+        {
             string result = null;
 
             int selected = GameSelectedScreen(block);

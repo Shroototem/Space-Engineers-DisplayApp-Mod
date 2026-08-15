@@ -2,13 +2,11 @@ using System;
 using System.Collections.Generic;
 using Sandbox.Game.GameSystems.TextSurfaceScripts;
 using VRage.Game.GUI.TextPanel;
-using VRage.Game.ModAPI.Ingame;
 using VRageMath;
 
 using MySurface = Sandbox.ModAPI.Ingame.IMyTextSurface;
 using MyCubeBlock = VRage.Game.ModAPI.Ingame.IMyCubeBlock;
-using MyInventory = VRage.Game.ModAPI.IMyInventory;
-using MyInventoryItem = VRage.Game.ModAPI.IMyInventoryItem;
+using MyInventoryItem = VRage.Game.ModAPI.Ingame.MyInventoryItem;
 
 namespace DisplayApps
 {
@@ -19,6 +17,7 @@ namespace DisplayApps
         {
             public string Name;
             public string Icon;
+            public string Value;
             public int Count;
         }
 
@@ -28,6 +27,8 @@ namespace DisplayApps
             public readonly List<CompRow> Rows = new List<CompRow>();
             readonly List<CompRow> _pool = new List<CompRow>();
             public long TotalItems;
+            public int MaxCount = 1;
+            public string TypesText, TotalText;
 
             public void Clear()
             {
@@ -35,6 +36,9 @@ namespace DisplayApps
                 _pool.AddRange(Rows);
                 Rows.Clear();
                 TotalItems = 0;
+                MaxCount = 1;
+                TypesText = null;
+                TotalText = null;
             }
 
             public CompRow RentRow()
@@ -49,7 +53,21 @@ namespace DisplayApps
             }
         }
 
+        sealed class CountDesc : IComparer<CompRow>
+        {
+            public static readonly CountDesc Instance = new CountDesc();
+            public int Compare(CompRow a, CompRow b)
+            {
+                return b.Count.CompareTo(a.Count);
+            }
+        }
+
         const string CompType = "MyObjectBuilder_Component";
+
+        /// <summary>Display name and sprite id per component subtype - pure
+        /// functions of the subtype, resolved once for the session.</summary>
+        static readonly Dictionary<string, string> _nameCache = new Dictionary<string, string>();
+        static readonly Dictionary<string, string> _iconCache = new Dictionary<string, string>();
 
         readonly Func<ComponentScan> _scanFunc;
         readonly Action<MyInventoryItem> _onItem;
@@ -83,18 +101,39 @@ namespace DisplayApps
                     return;
                 }
 
-                AddText(frame, $"COMPONENT TYPES: {rows.Count}", new Vector2(Left, 48f * S), 0.46f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, $"TOTAL: {scan.TotalItems:N0} ITEM(S)", new Vector2(Right, 48f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
+                AddText(frame, scan.TypesText, new Vector2(Left, 48f * S), 0.46f * S, FgColor, TextAlignment.LEFT);
+                AddText(frame, scan.TotalText, new Vector2(Right, 48f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
                 DrawDivider(frame, 60f);
 
                 float y = 74f * S;
                 float bottom = Bottom;
-                int maxCount = rows.Count > 0 ? rows[0].Count : 1;
                 int drawn = DrawListGroup(frame, 0, null, rows.Count, y, 0f, bottom - y, 24f * S, _drawRow);
 
                 if (!ConfigScroll && rows.Count > drawn)
                     DrawMore(frame, $"+{rows.Count - drawn} MORE TYPE(S)");
             }
+        }
+
+        static string NameFor(string subtype)
+        {
+            string name;
+            if (!_nameCache.TryGetValue(subtype, out name))
+            {
+                name = FormatItemName(subtype);
+                _nameCache[subtype] = name;
+            }
+            return name;
+        }
+
+        static string IconFor(string subtype)
+        {
+            string icon;
+            if (!_iconCache.TryGetValue(subtype, out icon))
+            {
+                icon = CompType + "/" + subtype;
+                _iconCache[subtype] = icon;
+            }
+            return icon;
         }
 
         ComponentScan ScanGrid()
@@ -112,34 +151,36 @@ namespace DisplayApps
             {
                 CompRow row = scan.RentRow();
                 row.Count = kv.Value;
-                row.Name = FormatItemName(kv.Key);
-                row.Icon = CompType + "/" + kv.Key;
+                row.Name = NameFor(kv.Key);
+                row.Icon = IconFor(kv.Key);
+                row.Value = kv.Value > 0 ? "x" + kv.Value.ToString("N0") : "x0";
                 scan.Rows.Add(row);
             }
-            scan.Rows.Sort((a, b) => b.Count.CompareTo(a.Count));
+            scan.Rows.Sort(CountDesc.Instance);
+            scan.MaxCount = scan.Rows.Count > 0 && scan.Rows[0].Count > 0 ? scan.Rows[0].Count : 1;
+            scan.TypesText = "COMPONENT TYPES: " + scan.Rows.Count;
+            scan.TotalText = "TOTAL: " + scan.TotalItems.ToString("N0") + " ITEM(S)";
             return scan;
         }
 
         void OnItem(MyInventoryItem item)
         {
-            var content = item.Content;
-            if (content == null) return;
-            if (content.TypeId.ToString() != CompType) return;
-            string subtype = content.SubtypeName;
+            ItemStats stats = GetItemStats(item.Type);
+            if (stats.Category != CatComponent) return;
+            string subtype = item.Type.SubtypeId;
             int count = (int)item.Amount;
             _scan.TotalItems += count;
             int cur;
-            if (_scan.Counts.TryGetValue(subtype, out cur)) _scan.Counts[subtype] = cur + count;
-            else _scan.Counts[subtype] = count;
+            _scan.Counts.TryGetValue(subtype, out cur);
+            _scan.Counts[subtype] = cur + count;
         }
 
         void DrawItemRow(int idx, float y)
         {
             CompRow row = _scan.Rows[idx];
-            int maxCount = _scan.Rows[0].Count;
-            float ratio = maxCount > 0 ? (float)row.Count / maxCount : 0f;
+            float ratio = (float)row.Count / _scan.MaxCount;
             bool hasStock = row.Count > 0;
-            DrawProgressRow(_frame, y, row.Icon, row.Name, hasStock ? $"x{row.Count:N0}" : "x0", ratio, new Color(140, 210, 160), hasStock);
+            DrawProgressRow(_frame, y, row.Icon, row.Name, row.Value, ratio, new Color(140, 210, 160), hasStock);
         }
     }
 }
