@@ -102,14 +102,8 @@ namespace DisplayApps
             }
         }
 
-        sealed class RatioDesc : IComparer<DamageRow>
-        {
-            public static readonly RatioDesc Instance = new RatioDesc();
-            public int Compare(DamageRow a, DamageRow b)
-            {
-                return b.Ratio.CompareTo(a.Ratio);
-            }
-        }
+        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
+        static readonly Comparison<DamageRow> RatioDesc = (a, b) => b.Ratio.CompareTo(a.Ratio);
 
         readonly Func<DamageScan> _scanFunc;
         MySpriteDrawFrame _frame;
@@ -284,7 +278,7 @@ namespace DisplayApps
                 row.Icon = DefIcon(slim);
                 scan.Rows.Add(row);
             }
-            scan.Rows.Sort(RatioDesc.Instance);
+            scan.Rows.Sort(RatioDesc);
 
             // Worst HighlightCount fat blocks (the end of the list - sorted
             // most complete first). Blocks with an empty entity name get one

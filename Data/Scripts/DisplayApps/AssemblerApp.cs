@@ -85,14 +85,11 @@ namespace DisplayApps
             }
         }
 
-        sealed class NameComparer : IComparer<AssemblerData>
-        {
-            public static readonly NameComparer Instance = new NameComparer();
-            public int Compare(AssemblerData x, AssemblerData y)
-            {
-                return string.Compare(x.Name, y.Name, false);
-            }
-        }
+        // Comparison<T> (not IComparer<T>) - the mod's script whitelist
+        // rejects some generic delegate/interface types (e.g. Predicate<T>),
+        // and Comparison<T> is the one already proven to compile in-game.
+        static readonly Comparison<AssemblerData> NameComparer =
+            (x, y) => string.Compare(x.Name, y.Name, false);
 
         /// <summary>Reused queue read buffer - the ingame GetQueue overload
         /// fills it instead of allocating a copy per assembler per scan.</summary>
@@ -256,7 +253,7 @@ namespace DisplayApps
                 scan.Assemblers.Add(data);
             }
 
-            scan.Assemblers.Sort(NameComparer.Instance);
+            scan.Assemblers.Sort(NameComparer);
             scan.HeaderText = "ASSEMBLERS: " + scan.AsmCount + "   (" + scan.AssembleCount + " ASSEMBLING / " + scan.DisassembleCount + " DISASSEMBLING)";
             scan.QueueText = "QUEUE: " + scan.QueueItems + " ITEM(S)";
             return scan;

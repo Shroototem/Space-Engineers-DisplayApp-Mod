@@ -53,14 +53,8 @@ namespace DisplayApps
             }
         }
 
-        sealed class CountDesc : IComparer<CompRow>
-        {
-            public static readonly CountDesc Instance = new CountDesc();
-            public int Compare(CompRow a, CompRow b)
-            {
-                return b.Count.CompareTo(a.Count);
-            }
-        }
+        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
+        static readonly Comparison<CompRow> CountDesc = (a, b) => b.Count.CompareTo(a.Count);
 
         const string CompType = "MyObjectBuilder_Component";
 
@@ -156,7 +150,7 @@ namespace DisplayApps
                 row.Value = kv.Value > 0 ? "x" + kv.Value.ToString("N0") : "x0";
                 scan.Rows.Add(row);
             }
-            scan.Rows.Sort(CountDesc.Instance);
+            scan.Rows.Sort(CountDesc);
             scan.MaxCount = scan.Rows.Count > 0 && scan.Rows[0].Count > 0 ? scan.Rows[0].Count : 1;
             scan.TypesText = "COMPONENT TYPES: " + scan.Rows.Count;
             scan.TotalText = "TOTAL: " + scan.TotalItems.ToString("N0") + " ITEM(S)";

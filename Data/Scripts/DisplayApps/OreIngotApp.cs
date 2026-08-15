@@ -71,23 +71,9 @@ namespace DisplayApps
             }
         }
 
-        sealed class VolDesc : IComparer<ItemRow>
-        {
-            public static readonly VolDesc Instance = new VolDesc();
-            public int Compare(ItemRow a, ItemRow b)
-            {
-                return b.Vol.CompareTo(a.Vol);
-            }
-        }
-
-        sealed class MassDesc : IComparer<ItemRow>
-        {
-            public static readonly MassDesc Instance = new MassDesc();
-            public int Compare(ItemRow a, ItemRow b)
-            {
-                return b.Mass.CompareTo(a.Mass);
-            }
-        }
+        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
+        static readonly Comparison<ItemRow> VolDesc = (a, b) => b.Vol.CompareTo(a.Vol);
+        static readonly Comparison<ItemRow> MassDesc = (a, b) => b.Mass.CompareTo(a.Mass);
 
         /// <summary>Display name and sprite id per subtype - pure functions of
         /// the subtype, resolved once for the session (ores and ingots share
@@ -278,7 +264,7 @@ namespace DisplayApps
             foreach (var kv in scan.Ingots)
                 BuildRow(scan, scan.RowIngots, kv.Key, kv.Value, false);
 
-            var cmp = ConfigStorageType == 2 ? (IComparer<ItemRow>)MassDesc.Instance : VolDesc.Instance;
+            var cmp = ConfigStorageType == 2 ? MassDesc : VolDesc;
             scan.RowOres.Sort(cmp);
             scan.RowIngots.Sort(cmp);
 

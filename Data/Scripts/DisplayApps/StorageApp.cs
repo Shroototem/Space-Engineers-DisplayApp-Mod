@@ -88,14 +88,8 @@ namespace DisplayApps
             }
         }
 
-        sealed class RatioDesc : IComparer<ContainerRow>
-        {
-            public static readonly RatioDesc Instance = new RatioDesc();
-            public int Compare(ContainerRow a, ContainerRow b)
-            {
-                return b.Ratio.CompareTo(a.Ratio);
-            }
-        }
+        // Comparison<T>, not IComparer<T> - see the note in AssemblerApp.
+        static readonly Comparison<ContainerRow> RatioDesc = (a, b) => b.Ratio.CompareTo(a.Ratio);
 
         readonly Func<StorageScan> _scanFunc;
         MySpriteDrawFrame _frame;
@@ -226,7 +220,7 @@ namespace DisplayApps
                 scan.Containers.Add(row);
             }
 
-            scan.Containers.Sort(RatioDesc.Instance);
+            scan.Containers.Sort(RatioDesc);
 
             // Display strings - pure functions of the totals above.
             float totalMatVol = scan.OreVol + scan.IngotVol + scan.CompVol + scan.AmmoVol + scan.ToolVol + scan.OtherVol;

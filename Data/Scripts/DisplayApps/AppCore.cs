@@ -882,27 +882,20 @@ namespace DisplayApps
                 TerminalBlocks.Clear();
                 return;
             }
-            if (_slimGroupPred == null)
+            // Predicate<T> itself is on the script whitelist's prohibited
+            // list (even though List.RemoveAll is allowed), so the filter
+            // is a manual reverse pass instead of RemoveAll(predicate).
+            for (int i = GridBlocks.Count - 1; i >= 0; i--)
             {
-                _slimGroupPred = SlimNotInGroups;
-                _termGroupPred = TermNotInGroups;
+                var fb = GridBlocks[i].FatBlock;
+                if (fb == null || !_groupIds.Contains(fb.EntityId))
+                    GridBlocks.RemoveAt(i);
             }
-            GridBlocks.RemoveAll(_slimGroupPred);
-            TerminalBlocks.RemoveAll(_termGroupPred);
-        }
-
-        Predicate<MySlimBlock> _slimGroupPred;
-        Predicate<MyTerminalBlock> _termGroupPred;
-
-        bool SlimNotInGroups(MySlimBlock b)
-        {
-            var fb = b.FatBlock;
-            return fb == null || !_groupIds.Contains(fb.EntityId);
-        }
-
-        bool TermNotInGroups(MyTerminalBlock b)
-        {
-            return !_groupIds.Contains(b.EntityId);
+            for (int i = TerminalBlocks.Count - 1; i >= 0; i--)
+            {
+                if (!_groupIds.Contains(TerminalBlocks[i].EntityId))
+                    TerminalBlocks.RemoveAt(i);
+            }
         }
 
         protected static string BlockName(VRage.Game.ModAPI.IMyCubeBlock block)
