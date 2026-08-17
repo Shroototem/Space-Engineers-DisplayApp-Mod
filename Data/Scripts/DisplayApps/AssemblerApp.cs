@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Sandbox.Game.GameSystems.TextSurfaceScripts;
 using VRage.Game.GUI.TextPanel;
+using VRage.Utils;
 using VRageMath;
 
 using MySurface = Sandbox.ModAPI.Ingame.IMyTextSurface;
@@ -15,7 +16,7 @@ namespace DisplayApps
     {
         class QueueEntry
         {
-            public string Subtype;
+            public MyStringHash Subtype;
             public string Display;
             public string Icon;
             public float Amount;
@@ -96,13 +97,14 @@ namespace DisplayApps
         static readonly List<Sandbox.ModAPI.Ingame.MyProductionItem> _queueBuf = new List<Sandbox.ModAPI.Ingame.MyProductionItem>();
 
         /// <summary>Reused subtype -> Items index map for the per-assembler
-        /// queue merge (was a fresh Dictionary + List per assembler).</summary>
-        static readonly Dictionary<string, int> _queueIndex = new Dictionary<string, int>();
+        /// queue merge (was a fresh Dictionary + List per assembler). Keyed
+        /// by MyStringHash so no per-item ToString() or string hashing.</summary>
+        static readonly Dictionary<MyStringHash, int> _queueIndex = new Dictionary<MyStringHash, int>();
 
         /// <summary>Display name and sprite id per blueprint subtype - pure
         /// functions of the subtype, resolved once for the session.</summary>
-        static readonly Dictionary<string, string> _displayCache = new Dictionary<string, string>();
-        static readonly Dictionary<string, string> _iconCache = new Dictionary<string, string>();
+        static readonly Dictionary<MyStringHash, string> _displayCache = new Dictionary<MyStringHash, string>();
+        static readonly Dictionary<MyStringHash, string> _iconCache = new Dictionary<MyStringHash, string>();
 
         readonly Func<AssemblerScan> _scanFunc;
 
@@ -181,23 +183,23 @@ namespace DisplayApps
             }
         }
 
-        static string DisplayFor(string subtype)
+        static string DisplayFor(MyStringHash subtype)
         {
             string display;
             if (!_displayCache.TryGetValue(subtype, out display))
             {
-                display = subtype.Replace('_', ' ');
+                display = subtype.ToString().Replace('_', ' ');
                 _displayCache[subtype] = display;
             }
             return display;
         }
 
-        static string IconFor(string subtype)
+        static string IconFor(MyStringHash subtype)
         {
             string icon;
             if (!_iconCache.TryGetValue(subtype, out icon))
             {
-                icon = SpriteLookup.ForItem(subtype);
+                icon = SpriteLookup.ForItem(subtype.ToString());
                 _iconCache[subtype] = icon;
             }
             return icon;
@@ -226,7 +228,7 @@ namespace DisplayApps
                 _queueIndex.Clear();
                 for (int k = 0; k < _queueBuf.Count; k++)
                 {
-                    string subtype = _queueBuf[k].BlueprintId.SubtypeId.ToString();
+                    MyStringHash subtype = _queueBuf[k].BlueprintId.SubtypeId;
                     float amt = (float)_queueBuf[k].Amount;
                     int idx;
                     if (_queueIndex.TryGetValue(subtype, out idx))
@@ -253,7 +255,7 @@ namespace DisplayApps
                 scan.Assemblers.Add(data);
             }
 
-            scan.Assemblers.Sort((x, y) => string.Compare(x.Name, y.Name, false));
+            scan.Assemblers.Sort((x, y) => string.Compare(x.Name, y.Name, StringComparison.Ordinal));
             scan.HeaderText = "ASSEMBLERS: " + scan.AsmCount + "   (" + scan.AssembleCount + " ASSEMBLING / " + scan.DisassembleCount + " DISASSEMBLING)";
             scan.QueueText = "QUEUE: " + scan.QueueItems + " ITEM(S)";
             return scan;

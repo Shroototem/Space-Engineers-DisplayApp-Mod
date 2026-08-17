@@ -17,22 +17,40 @@ namespace DisplayApps
     [MyTextSurfaceScript("PowerInfo", "Info Power")]
     public class PowerApp : AppBase
     {
+        /// <summary>One battery's scan-side state. All ModAPI property reads and
+        /// row strings are resolved once per grid per window in the scan
+        /// (shared by every display), so the draw side makes no block API
+        /// calls and only builds strings for visible rows.</summary>
+        class BatteryRow
+        {
+            public string Name;
+            public float Stored, Max, In, Out;
+            public bool Charging;
+            public float Ratio;
+            public string State;
+            public Color StateColor;
+            public string Details;
+        }
+
         class PowerScan : IScanData
         {
-            public readonly List<Battery> Batteries = new List<Battery>();
+            public readonly List<BatteryRow> Batteries = new List<BatteryRow>();
+            readonly List<BatteryRow> _rowPool = new List<BatteryRow>();
             public float SolarCur, SolarMax, WindCur, WindMax, ReactCur, ReactMax, EngCur, EngMax;
             public BatterySummary Bat;
             public int SolarCount, WindCount, ReactCount, EngCount, BatCount;
 
             // Grid-wide strings, built once per grid per window in the scan.
-            // Per-battery row strings stay draw-side on purpose: only visible
-            // rows render, so precomputing all N would be a pessimization.
+            // Per-battery row strings are built in the scan too - the scan is
+            // shared per grid per window, so precomputing them is cheaper than
+            // per-display reads and formatting.
             public string StorageText, FlowText, MinTimeText, BatHeader;
             public readonly string[] CatTexts = new string[4];
             public readonly float[] CatRatios = new float[4];
 
             public void Clear()
             {
+                _rowPool.AddRange(Batteries);
                 Batteries.Clear();
                 SolarCur = 0f;
                 SolarMax = 0f;
@@ -57,6 +75,17 @@ namespace DisplayApps
                     CatTexts[i] = null;
                     CatRatios[i] = 0f;
                 }
+            }
+
+            public BatteryRow RentBatteryRow()
+            {
+                if (_rowPool.Count > 0)
+                {
+                    BatteryRow row = _rowPool[_rowPool.Count - 1];
+                    _rowPool.RemoveAt(_rowPool.Count - 1);
+                    return row;
+                }
+                return new BatteryRow();
             }
         }
 
@@ -157,7 +186,45 @@ namespace DisplayApps
                 {
                     AccumulateBattery(ref scan.Bat, bat);
                     scan.BatCount++;
-                    scan.Batteries.Add(bat);
+
+                    // Interface property reads are virtual sync-var lookups -
+                    // each is read exactly once per grid per window here,
+                    // shared by every display showing this grid.
+                    BatteryRow row = scan.RentBatteryRow();
+                    row.Name = Truncate(BlockName(bat), 20);
+                    row.Stored = (float)bat.CurrentStoredPower;
+                    row.Max = (float)bat.MaxStoredPower;
+                    row.In = (float)bat.CurrentInput;
+                    row.Out = (float)bat.CurrentOutput;
+                    row.Charging = bat.IsCharging;
+                    row.Ratio = row.Max > 0f ? row.Stored / row.Max : 0f;
+
+                    string state;
+                    Color stateColor;
+                    if (row.Charging)
+                    {
+                        state = $"CHARGING (+{row.In:0.00} MW)";
+                        stateColor = new Color(50, 210, 90);
+                    }
+                    else if (bat.ChargeMode == Sandbox.ModAPI.Ingame.ChargeMode.Recharge)
+                    {
+                        state = $"RECHARGE (+{row.In:0.00} MW)";
+                        stateColor = new Color(80, 200, 230);
+                    }
+                    else if (row.Out > 0.005f)
+                    {
+                        state = $"DISCHARGING (-{row.Out:0.00} MW)";
+                        stateColor = new Color(230, 60, 50);
+                    }
+                    else
+                    {
+                        state = "STANDBY";
+                        stateColor = new Color(140, 145, 155);
+                    }
+                    row.State = state;
+                    row.StateColor = stateColor;
+                    row.Details = $"{row.Stored:0.00} / {row.Max:0.00} MWh ({row.Ratio * 100f:0}%)";
+                    scan.Batteries.Add(row);
                     continue;
                 }
                 Solar s = b as Solar;
@@ -242,50 +309,16 @@ namespace DisplayApps
 
         void DrawBatteryRow(int idx, float rowTop)
         {
-            Battery battery = _scan.Batteries[idx];
-            // Interface property reads are virtual sync-var lookups - read each
-            // one once. Name resolution is lazy on purpose: only visible rows
-            // pay for the CustomName string.
-            float stored = (float)battery.CurrentStoredPower;
-            float maxStored = (float)battery.MaxStoredPower;
-            float curIn = (float)battery.CurrentInput;
-            float curOut = (float)battery.CurrentOutput;
-            bool charging = battery.IsCharging;
-            float ratio = maxStored > 0f ? stored / maxStored : 0f;
+            BatteryRow row = _scan.Batteries[idx];
+            // Pure render from the scan-side row: no block API calls, the
+            // strings and colors were resolved once per grid per window.
+            AddText(_frame, row.Name, new Vector2(Left, rowTop + 1f * S), 0.48f * S, FgColor, TextAlignment.LEFT);
+            AddText(_frame, row.State, new Vector2(Right, rowTop + 1f * S), 0.44f * S, row.StateColor, TextAlignment.RIGHT);
 
-            string name = Truncate(BlockName(battery), 20);
-
-            string state;
-            Color stateColor;
-            if (charging)
-            {
-                state = $"CHARGING (+{curIn:0.00} MW)";
-                stateColor = new Color(50, 210, 90);
-            }
-            else if (battery.ChargeMode == Sandbox.ModAPI.Ingame.ChargeMode.Recharge)
-            {
-                state = $"RECHARGE (+{curIn:0.00} MW)";
-                stateColor = new Color(80, 200, 230);
-            }
-            else if (curOut > 0.005f)
-            {
-                state = $"DISCHARGING (-{curOut:0.00} MW)";
-                stateColor = new Color(230, 60, 50);
-            }
-            else
-            {
-                state = "STANDBY";
-                stateColor = new Color(140, 145, 155);
-            }
-
-            AddText(_frame, name, new Vector2(Left, rowTop + 1f * S), 0.48f * S, FgColor, TextAlignment.LEFT);
-            AddText(_frame, state, new Vector2(Right, rowTop + 1f * S), 0.44f * S, stateColor, TextAlignment.RIGHT);
-
-            string details = $"{stored:0.00} / {maxStored:0.00} MWh ({ratio * 100f:0}%)";
-            AddText(_frame, details, new Vector2(Left, rowTop + 15f * S), 0.44f * S, new Color(170, 175, 185), TextAlignment.LEFT);
+            AddText(_frame, row.Details, new Vector2(Left, rowTop + 15f * S), 0.44f * S, new Color(170, 175, 185), TextAlignment.LEFT);
 
             RectangleF bar = new RectangleF(new Vector2(Left, rowTop + 29f * S), new Vector2(Right - Left, 6f * S));
-            DrawBar(_frame, bar, ratio, charging ? new Color(80, 200, 230) : BarColor(ratio));
+            DrawBar(_frame, bar, row.Ratio, row.Charging ? new Color(80, 200, 230) : BarColor(row.Ratio));
         }
     }
 }

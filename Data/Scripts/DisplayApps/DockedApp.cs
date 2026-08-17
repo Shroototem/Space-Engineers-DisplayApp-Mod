@@ -60,6 +60,20 @@ namespace DisplayApps
 
         static readonly Dictionary<long, ShipStats> _dockStats = new Dictionary<long, ShipStats>();
         static readonly List<long> _staleDockStats = new List<long>();
+        static int _dockEvictCounter;
+
+        /// <summary>Blocks of the host grid's terminal group, bucketed by
+        /// owning grid and rebuilt once per window. Connector-docked grids
+        /// are part of the same terminal system, so one group walk serves
+        /// every docked ship's stat refresh (was one full walk per ship).</summary>
+        class GridBuckets
+        {
+            public long Window = -1;
+            public readonly Dictionary<long, List<MyTerminalBlock>> Blocks = new Dictionary<long, List<MyTerminalBlock>>();
+        }
+
+        static readonly Dictionary<long, GridBuckets> _bucketsByHost = new Dictionary<long, GridBuckets>();
+        static readonly List<long> _staleBuckets = new List<long>();
 
         class DockedScan : IScanData
         {
@@ -106,7 +120,7 @@ namespace DisplayApps
         DockedScan _scan;
         readonly Action<int, float> _drawShipRow;
 
-        /// <summary>Shared block buffer for the docked-grid walk - only one
+        /// <summary>Shared raw block buffer for the per-window group walk - only one
         /// scan runs at a time, so one static list serves all instances.</summary>
         static readonly List<MyTerminalBlock> _dockedBlocks = new List<MyTerminalBlock>();
 
@@ -154,8 +168,10 @@ namespace DisplayApps
         }
 
         /// <summary>Fills stats with the docked grid's battery/gas/cargo state.
-        /// Runs at most once per docked grid per window (Window stamp).</summary>
-        static void RefreshShipStats(ShipStats stats, MyGrid grid, long window)
+        /// Runs at most once per docked grid per window (Window stamp).
+        /// Reads the bucket of blocks built by the per-window group walk,
+        /// so no terminal-system API calls happen here.</summary>
+        static void RefreshShipStats(ShipStats stats, List<MyTerminalBlock> bucket, long window)
         {
             if (stats.Window == window) return;
             stats.Window = window;
@@ -165,16 +181,10 @@ namespace DisplayApps
             stats.CargoVol = 0f;
             stats.CargoMax = 0f;
 
-            if (MyAPIGateway.TerminalActionsHelper == null) return;
-            var ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
-            if (ts == null) return;
-
-            _dockedBlocks.Clear();
-            ts.GetBlocks(_dockedBlocks);
-            for (int k = 0; k < _dockedBlocks.Count; k++)
+            if (bucket == null || bucket.Count == 0) return;
+            for (int k = 0; k < bucket.Count; k++)
             {
-                MyTerminalBlock fb = _dockedBlocks[k];
-                if (fb.CubeGrid != grid) continue;
+                MyTerminalBlock fb = bucket[k];
 
                 Battery bat = fb as Battery;
                 if (bat != null)
@@ -203,10 +213,60 @@ namespace DisplayApps
             }
         }
 
+        /// <summary>Rebuilds the per-grid block buckets for this display's
+        /// scan grid group. Runs once per window; every docked ship's stat
+        /// refresh then reads only its own grid's bucket.</summary>
+        static void RefreshBuckets(GridBuckets buckets, VRage.Game.ModAPI.IMyCubeGrid grid, long window)
+        {
+            if (buckets.Window == window) return;
+            buckets.Window = window;
+            foreach (var kv in buckets.Blocks) kv.Value.Clear();
+
+            if (MyAPIGateway.TerminalActionsHelper == null) return;
+            var ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
+            if (ts == null) return;
+
+            _dockedBlocks.Clear();
+            ts.GetBlocks(_dockedBlocks);
+            for (int i = 0; i < _dockedBlocks.Count; i++)
+            {
+                MyTerminalBlock fb = _dockedBlocks[i];
+                List<MyTerminalBlock> bucket;
+                if (!buckets.Blocks.TryGetValue(fb.CubeGrid.EntityId, out bucket))
+                {
+                    bucket = new List<MyTerminalBlock>();
+                    buckets.Blocks[fb.CubeGrid.EntityId] = bucket;
+                }
+                bucket.Add(fb);
+            }
+        }
+
         DockedScan ScanGrid()
         {
             RefreshTerminalBlocks();
             long window = Window();
+
+            // One group walk per window, shared by every docked grid below.
+            GridBuckets buckets = null;
+            long hostId = ScanGridId;
+            if (hostId != 0)
+            {
+                if (!_bucketsByHost.TryGetValue(hostId, out buckets))
+                {
+                    buckets = new GridBuckets();
+                    _bucketsByHost[hostId] = buckets;
+                }
+                RefreshBuckets(buckets, CurrentScanGrid, window);
+            }
+            if (_bucketsByHost.Count > 16)
+            {
+                _staleBuckets.Clear();
+                foreach (var kv in _bucketsByHost)
+                    if (kv.Value.Window != window) _staleBuckets.Add(kv.Key);
+                for (int i = 0; i < _staleBuckets.Count; i++)
+                    _bucketsByHost.Remove(_staleBuckets[i]);
+                _staleBuckets.Clear();
+            }
 
             DockedScan scan = RentScan<DockedScan>();
             for (int i = 0; i < TerminalBlocks.Count; i++)
@@ -235,7 +295,10 @@ namespace DisplayApps
                     stats = new ShipStats();
                     _dockStats[grid.EntityId] = stats;
                 }
-                RefreshShipStats(stats, grid, window);
+                List<MyTerminalBlock> bucket = null;
+                if (buckets != null)
+                    buckets.Blocks.TryGetValue(grid.EntityId, out bucket);
+                RefreshShipStats(stats, bucket, window);
                 ship.Bat = stats.Bat;
                 ship.HasH2 = stats.HasH2;
                 ship.HasO2 = stats.HasO2;
@@ -277,8 +340,9 @@ namespace DisplayApps
                 scan.Ships.Add(ship);
             }
 
-            // Drop cached stats of grids that undocked.
-            if (_dockStats.Count > 64)
+            // Drop cached stats of grids that undocked (gated: the purge itself
+            // walks the whole map).
+            if (_dockStats.Count > 64 && (++_dockEvictCounter & 7) == 0)
             {
                 _staleDockStats.Clear();
                 foreach (var kv in _dockStats)
@@ -288,7 +352,7 @@ namespace DisplayApps
                 _staleDockStats.Clear();
             }
 
-            scan.Ships.Sort((x, y) => string.Compare(x.GridName, y.GridName, false));
+            scan.Ships.Sort((x, y) => string.Compare(x.GridName, y.GridName, StringComparison.Ordinal));
             scan.DockedText = "DOCKED: " + scan.Ships.Count + " GRID(S)";
             scan.ConnText = "CONNECTORS: " + scan.Connected + "/" + scan.Connectors;
             return scan;

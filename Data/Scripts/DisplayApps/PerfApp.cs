@@ -24,6 +24,11 @@ namespace DisplayApps
         /// so the buffer never re-grows past the first build.</summary>
         static readonly StringBuilder _sb = new StringBuilder(8192);
 
+        /// <summary>Reused line buffer for the advanced view - the dump is
+        /// split once per update into this list instead of re-scanning the
+        /// string with IndexOf for counting, skipping and drawing.</summary>
+        static readonly List<string> _dumpLines = new List<string>();
+
         /// <summary>Cap for the per-display section of the advanced dump. The
         /// list is sorted worst-first, so the tail carries no information, and
         /// without a cap the dump grows with every LCD in the world.</summary>
@@ -48,7 +53,16 @@ namespace DisplayApps
         string _lastWritten;
 
         public PerfApp(MySurface surface, MyCubeBlock block, Vector2 size)
-            : base(surface, block, size) { }
+            : base(surface, block, size)
+        {
+            Perf.LivePerfApps++;
+        }
+
+        public override void Dispose()
+        {
+            if (Perf.LivePerfApps > 0) Perf.LivePerfApps--;
+            base.Dispose();
+        }
 
         protected override void RunApp()
         {
@@ -96,39 +110,32 @@ namespace DisplayApps
                     int maxRows = Math.Max(1, (int)((bottom - y) / (18f * S)));
                     int chars = Math.Max(24, (int)((Right - Left) / (0.40f * S * 6.5f)));
 
-                    int lineCount = 1;
+                    // One split pass into the reused line buffer - the
+                    // per-line Substring/TrimEnd are unavoidable for drawing,
+                    // but counting, skipping and drawing all read the list.
+                    _dumpLines.Clear();
                     int pos = 0;
-                    if (ConfigScroll)
-                    {
-                        int ci = dump.IndexOf('\n');
-                        while (ci >= 0)
-                        {
-                            lineCount++;
-                            ci = dump.IndexOf('\n', ci + 1);
-                        }
-                        int start = ScrollStart(0, lineCount, maxRows);
-                        int lineNo = 0;
-                        while (lineNo < start && pos < dump.Length)
-                        {
-                            int nl = dump.IndexOf('\n', pos);
-                            if (nl < 0) break;
-                            pos = nl + 1;
-                            lineNo++;
-                        }
-                    }
-
-                    int drawn = 0;
-                    while (drawn < maxRows && pos <= dump.Length)
+                    while (pos < dump.Length)
                     {
                         int nl = dump.IndexOf('\n', pos);
                         int end = nl < 0 ? dump.Length : nl;
-                        string line = dump.Substring(pos, end - pos).TrimEnd();
+                        _dumpLines.Add(dump.Substring(pos, end - pos).TrimEnd());
+                        if (nl < 0) break;
+                        pos = nl + 1;
+                    }
+                    int lineCount = _dumpLines.Count;
+                    int start = 0;
+                    if (ConfigScroll)
+                        start = ScrollStart(0, lineCount, maxRows);
+
+                    int drawn = 0;
+                    for (int li = start; li < _dumpLines.Count && drawn < maxRows; li++)
+                    {
+                        string line = _dumpLines[li];
                         if (line.Length > chars) line = line.Substring(0, chars);
                         AddText(frame, line, new Vector2(Left, y), 0.40f * S, LineColor(line), TextAlignment.LEFT);
                         y += 18f * S;
                         drawn++;
-                        if (nl < 0) break;
-                        pos = nl + 1;
                     }
                     if (ConfigScroll)
                         DrawScrollBar(frame, 0, lineCount, maxRows, 56f * S, bottom);
@@ -232,7 +239,7 @@ namespace DisplayApps
             var sb = _sb;
             sb.Clear();
             sb.AppendLine("DISPLAYAPPS PERFORMANCE");
-            sb.Append("PLAYTIME: ").AppendLine(MyAPIGateway.Session.ElapsedPlayTime.ToString(@"hh\:mm\:ss"));
+            sb.Append("PLAYTIME: ").AppendLine(Perf.ElapsedSinceStart().ToString(@"hh\:mm\:ss"));
             sb.AppendLine("NAME".PadRight(18) + "UPD".PadLeft(6) + "AVG".PadLeft(8) + "MAX".PadLeft(8) + "SCANS".PadLeft(7) + "SCN_AVG".PadLeft(9) + "SCN_MAX".PadLeft(9));
 
             for (int i = 0; i < _statBuffer.Count; i++)
@@ -259,7 +266,7 @@ namespace DisplayApps
             var sb = _sb;
             sb.Clear();
             sb.AppendLine("DISPLAYAPPS PERFORMANCE - ADVANCED");
-            sb.Append("PLAYTIME: ").AppendLine(MyAPIGateway.Session.ElapsedPlayTime.ToString(@"hh\:mm\:ss"));
+            sb.Append("PLAYTIME: ").AppendLine(Perf.ElapsedSinceStart().ToString(@"hh\:mm\:ss"));
             sb.AppendLine();
 
             sb.AppendLine("== UPDATE TIMES (ms per update) ==");
@@ -277,6 +284,20 @@ namespace DisplayApps
                 PadL(sb, st.IntervalMaxMs.ToString("0"), 9);
                 sb.Append("  ");
                 AppendHist(sb, st.Hist);
+                sb.AppendLine();
+            }
+            sb.AppendLine();
+            sb.AppendLine("== ENGINE CALLS (Run invoked vs gated full updates) ==");
+            sb.AppendLine("APP".PadRight(16) + "CALLED".PadLeft(8) + "FULL".PadLeft(7) + "GAP_AVG".PadLeft(9));
+            sb.AppendLine("# GAP_AVG = sim ticks between engine Run() calls - ~10 = every 10th tick,");
+            sb.AppendLine("#   hundreds+ = engine skipped calls (display out of render range/view).");
+            for (int i = 0; i < _statBuffer.Count; i++)
+            {
+                PerfStat st = _statBuffer[i].Value;
+                PadR(sb, _statBuffer[i].Key, 16);
+                PadL(sb, st.Invoked.ToString(), 8);
+                PadL(sb, st.Count.ToString(), 7);
+                PadL(sb, st.InvokeGapAvgTicks.ToString("0.0"), 9);
                 sb.AppendLine();
             }
             sb.AppendLine();

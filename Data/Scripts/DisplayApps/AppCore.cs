@@ -44,7 +44,7 @@ namespace DisplayApps
         string _perfAppName;
         string _perfLabel;
         string _perfLabelSource;
-        string _configGroupsKey = "";
+        readonly int _updateSlot;
         readonly int[] ScrollPos = new int[4];
         readonly int[] ScrollShown = new int[4];
         readonly List<VRage.Game.ModAPI.IMyCubeGrid> _subGrids = new List<VRage.Game.ModAPI.IMyCubeGrid>();
@@ -193,6 +193,10 @@ namespace DisplayApps
             if (!AppClassToRegion.TryGetValue(GetType().Name, out region))
                 region = GetType().Name;
             AppRegionName = region;
+            _perfAppName = GetType().Name;
+            // Fire-point slot 0..9 within each 100-tick window (the engine
+            // calls Run every 10 ticks, so 10 fire-points per window).
+            _updateSlot = block != null ? (int)(block.EntityId % 10) : 0;
             if (block != null && block.EntityId != 0)
             {
                 AppTerminalControls.EnsureRegistered(block as MyTerminalBlock);
@@ -223,16 +227,28 @@ namespace DisplayApps
             Bottom = m_size.Y - 32f * S;
         }
 
-        public override ScriptUpdate NeedsUpdate => ScriptUpdate.Update100;
+        public override ScriptUpdate NeedsUpdate => ScriptUpdate.Update10;
 
         public override void Run()
         {
+            // Work splitting: ScriptUpdate has no per-tick member (the enum
+            // only offers Update10/100/1000/10000 - an undefined cast value
+            // like (ScriptUpdate)1 is rejected by the engine and never
+            // called), so Update10 is the finest cadence available: the
+            // engine calls Run every 10 ticks, ten times per 100-tick
+            // window. Each display does its full update only at the
+            // fire-point matching its slot, exactly once per window - the
+            // load spreads across the window's ten fire-points while the
+            // data still refreshes at the Update100 cadence.
+            int tick = MyAPIGateway.Session.GameplayFrameCounter;
+            if (Perf.LivePerfApps > 0)
+                Perf.CountInvocation(_perfAppName, tick);
+            if ((tick / 10) % 10 != _updateSlot) return;
             try
             {
                 AppTerminalControls.EnsureRegistered(Block as MyTerminalBlock);
                 BgColor = Surface.ScriptBackgroundColor;
                 FgColor = Surface.ScriptForegroundColor;
-                if (_perfAppName == null) _perfAppName = GetType().Name;
                 long t0 = Stopwatch.GetTimestamp();
                 LoadConfig();
                 RunApp();
@@ -244,7 +260,8 @@ namespace DisplayApps
                     _perfLabelSource = source;
                     _perfLabel = _perfAppName + " [" + (source ?? ("Block " + Block.EntityId)) + "]";
                 }
-                Perf.Record(_perfAppName, _perfLabel, ms, MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds);
+                if (Perf.LivePerfApps > 0)
+                    Perf.Record(_perfAppName, _perfLabel, ms, MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds);
                 if (ms > 50.0)
                     MyLog.Default.WriteLine("DisplayApps " + _perfAppName + ": slow update " + ms.ToString("0.0") + " ms");
             }
@@ -253,11 +270,12 @@ namespace DisplayApps
             }
         }
 
-        /// <summary>Current scan window index - advances once per update (100 sim
-        /// ticks, derived from the engine's tick rate).</summary>
+        /// <summary>Current scan window index - advances once per 100 sim ticks.
+        /// Derived from the tick counter so the scan cache stamps stay
+        /// consistent with the Update100 invocation cadence.</summary>
         protected long Window()
         {
-            return (long)(MyAPIGateway.Session.ElapsedPlayTime.TotalSeconds * VRage.Game.MyEngineConstants.UPDATE_STEPS_PER_SECOND / 100.0);
+            return MyAPIGateway.Session.GameplayFrameCounter / 100;
         }
 
         protected abstract void RunApp();
@@ -269,7 +287,7 @@ namespace DisplayApps
         protected void RefreshGridBlocks()
         {
             GridBlocks.Clear();
-            var grid = _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+            var grid = CurrentScanGrid;
             if (ConfigSubGrids && MyAPIGateway.GridGroups != null)
             {
                 _subGrids.Clear();
@@ -296,15 +314,20 @@ namespace DisplayApps
         protected void RefreshTerminalBlocks()
         {
             TerminalBlocks.Clear();
-            var grid = _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+            var grid = CurrentScanGrid;
             if (MyAPIGateway.TerminalActionsHelper == null) return;
             var ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
             if (ts == null) return;
             ts.GetBlocks(TerminalBlocks);
             if (!ConfigSubGrids)
             {
-                for (int i = TerminalBlocks.Count - 1; i >= 0; i--)
-                    if (TerminalBlocks[i].CubeGrid != grid) TerminalBlocks.RemoveAt(i);
+                // Compaction pass: one write index, then a single RemoveRange
+                // (reverse RemoveAt would shift the tail per removal - O(n^2)
+                // on groups with many subgrid blocks).
+                int w = 0;
+                for (int i = 0; i < TerminalBlocks.Count; i++)
+                    if (TerminalBlocks[i].CubeGrid == grid) TerminalBlocks[w++] = TerminalBlocks[i];
+                if (w < TerminalBlocks.Count) TerminalBlocks.RemoveRange(w, TerminalBlocks.Count - w);
             }
             ApplyGroupFilter();
             _lastScanBlocks = TerminalBlocks.Count;
@@ -416,7 +439,6 @@ namespace DisplayApps
             ConfigPerfLog = ParseConfigBool("PerfLog", false);
             ConfigStorageType = ParseConfigStorageType("StorageType", 1);
             ConfigOreIngotType = ParseConfigOreIngotType("OreIngotType", 1);
-            _configGroupsKey = ConfigGroups.Count > 0 ? string.Join(",", ConfigGroups) : "";
             ApplyLayout();
 
             EnsureConfigOptions(tb);
@@ -845,7 +867,7 @@ namespace DisplayApps
             if (ConfigGroups.Count == 0) return;
             if (MyAPIGateway.TerminalActionsHelper == null) return;
 
-            var grid = _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid;
+            var grid = CurrentScanGrid;
             IMyGridTerminalSystem ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
             if (ts == null) return;
 
@@ -884,18 +906,21 @@ namespace DisplayApps
             }
             // Predicate<T> itself is on the script whitelist's prohibited
             // list (even though List.RemoveAll is allowed), so the filter
-            // is a manual reverse pass instead of RemoveAll(predicate).
-            for (int i = GridBlocks.Count - 1; i >= 0; i--)
+            // is a manual compaction pass instead of RemoveAll(predicate) -
+            // one write index plus a single RemoveRange, not reverse RemoveAt.
+            int w = 0;
+            for (int i = 0; i < GridBlocks.Count; i++)
             {
                 var fb = GridBlocks[i].FatBlock;
-                if (fb == null || !_groupIds.Contains(fb.EntityId))
-                    GridBlocks.RemoveAt(i);
+                if (fb != null && _groupIds.Contains(fb.EntityId)) GridBlocks[w++] = GridBlocks[i];
             }
-            for (int i = TerminalBlocks.Count - 1; i >= 0; i--)
+            if (w < GridBlocks.Count) GridBlocks.RemoveRange(w, GridBlocks.Count - w);
+            w = 0;
+            for (int i = 0; i < TerminalBlocks.Count; i++)
             {
-                if (!_groupIds.Contains(TerminalBlocks[i].EntityId))
-                    TerminalBlocks.RemoveAt(i);
+                if (_groupIds.Contains(TerminalBlocks[i].EntityId)) TerminalBlocks[w++] = TerminalBlocks[i];
             }
+            if (w < TerminalBlocks.Count) TerminalBlocks.RemoveRange(w, TerminalBlocks.Count - w);
         }
 
         protected static string BlockName(VRage.Game.ModAPI.IMyCubeBlock block)
@@ -1233,29 +1258,22 @@ namespace DisplayApps
             return stats;
         }
 
-        static readonly Dictionary<MyStringHash, bool> _gasTypeCache = new Dictionary<MyStringHash, bool>();
-
-        /// <summary>True when the given block definition subtype is a hydrogen
-        /// tank. The subtype string is already stored inside the MyStringHash,
-        /// so the check runs once per subtype and is cached afterwards - no
-        /// per-scan string building or scanning.</summary>
-        protected static bool IsHydrogenTank(MyStringHash subtype)
-        {
-            bool isH2;
-            if (!_gasTypeCache.TryGetValue(subtype, out isH2))
-            {
-                isH2 = subtype.ToString().IndexOf("Hydrogen", StringComparison.Ordinal) >= 0;
-                _gasTypeCache[subtype] = isH2;
-            }
-            return isH2;
-        }
+        static readonly Dictionary<string, bool> _gasTypeCache = new Dictionary<string, bool>(StringComparer.Ordinal);
 
         /// <summary>True when the given gas tank block is a hydrogen tank
         /// (else it is treated as an oxygen tank). BlockDefinition.SubtypeId
-        /// is already a string, so this is one hash lookup plus the cache.</summary>
+        /// is already a string, so no MyStringHash round-trip is needed -
+        /// the substring check runs once per subtype and is cached.</summary>
         protected static bool IsHydrogenTank(Sandbox.ModAPI.IMyGasTank tank)
         {
-            return IsHydrogenTank(MyStringHash.GetOrCompute(tank.BlockDefinition.SubtypeId));
+            string subtype = tank.BlockDefinition.SubtypeId;
+            bool isH2;
+            if (!_gasTypeCache.TryGetValue(subtype, out isH2))
+            {
+                isH2 = subtype.IndexOf("Hydrogen", StringComparison.Ordinal) >= 0;
+                _gasTypeCache[subtype] = isH2;
+            }
+            return isH2;
         }
 
         /// <summary>
@@ -1285,7 +1303,14 @@ namespace DisplayApps
             key = key * 397 + (ConfigFullList ? 1 : 0);
             key = key * 397 + ConfigStorageType;
             if (ConfigGroups.Count > 0)
-                key = key * 397 + _configGroupsKey.GetHashCode();
+            {
+                // No intermediate join string: fold the group names into the
+                // key directly.
+                int h = 0;
+                for (int i = 0; i < ConfigGroups.Count; i++)
+                    h = h * 397 + ConfigGroups[i].GetHashCode();
+                key = key * 397 + h;
+            }
 
             var map = ScanCache<T>.Map;
             CacheEntry<T> entry;
@@ -1306,10 +1331,11 @@ namespace DisplayApps
             long t0 = Stopwatch.GetTimestamp();
             T data = scan();
             double scanMs = (Stopwatch.GetTimestamp() - t0) * 1000.0 / Stopwatch.Frequency;
-            Perf.RecordScan(_perfAppName ?? GetType().Name, scanMs, _lastScanBlocks);
+            if (Perf.LivePerfApps > 0)
+                Perf.RecordScan(_perfAppName ?? GetType().Name, scanMs, _lastScanBlocks);
             map[key] = ScanCache<T>.RentEntry(window, data);
 
-            if (map.Count > 64)
+            if (map.Count > 64 && (++ScanCache<T>.EvictCounter & 7) == 0)
             {
                 var stale = ScanCache<T>.Stale;
                 stale.Clear();
@@ -1348,6 +1374,14 @@ namespace DisplayApps
             }
         }
 
+        /// <summary>The grid the current scan targets: the remote grid when
+        /// configured, else the LCD's own grid. Named CurrentScanGrid so it
+        /// can't collide with the apps' own ScanGrid() scan methods.</summary>
+        protected VRage.Game.ModAPI.IMyCubeGrid CurrentScanGrid
+        {
+            get { return _scanGrid ?? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid; }
+        }
+
         /// <summary>Returns the grid to scan: the remote grid when RemoteGrid is
         /// configured, otherwise the LCD's own grid. Null when the remote grid
         /// can't be found.</summary>
@@ -1369,8 +1403,8 @@ namespace DisplayApps
         /// periodic refresh. 0 means not found.</summary>
         long ResolveRemoteGridId(string name, long window)
         {
-            const long RefreshEvery = 30;
-            const long RetryEvery = 10;
+            const long RefreshEvery = 120;
+            const long RetryEvery = 40;
 
             RemoteLookup hit;
             bool cached = _remoteLookup.TryGetValue(name, out hit);
@@ -1387,7 +1421,7 @@ namespace DisplayApps
             if (MyAPIGateway.Entities != null)
             {
                 _entityBuffer.Clear();
-                MyAPIGateway.Entities.GetEntities(_entityBuffer);
+                MyAPIGateway.Entities.GetEntities(_entityBuffer, e => e is VRage.Game.ModAPI.IMyCubeGrid);
                 foreach (var entity in _entityBuffer)
                 {
                     var grid = entity as VRage.Game.ModAPI.IMyCubeGrid;
@@ -1428,6 +1462,17 @@ namespace DisplayApps
         public int IntervalCount;
         public readonly int[] Hist = new int[Perf.UpdateBuckets];
         public readonly int[] ScanHist = new int[Perf.ScanBuckets];
+
+        // Engine-call diagnostics: how often the engine invokes Run() vs how
+        // many calls pass the slot gate (Count). InvokeGapAvgTicks is the
+        // average sim-tick gap between consecutive engine calls - 10 means
+        // every 10th tick, large values mean the engine skipped calls
+        // (render range / out of view).
+        public int Invoked;
+        public int LastInvokeTick = -1;
+        public long InvokeGapSum;
+        public int InvokeGapCount;
+        public double InvokeGapAvgTicks { get { return InvokeGapCount > 0 ? InvokeGapSum / (double)InvokeGapCount : 0.0; } }
 
         public double AvgMs { get { return Count > 0 ? SumMs / Count : 0.0; } }
         public double ScanAvgMs { get { return Scans > 0 ? ScanSumMs / Scans : 0.0; } }
@@ -1480,15 +1525,55 @@ namespace DisplayApps
         static int _recordCounter;
         static readonly List<string> _staleInstances = new List<string>();
 
+        /// <summary>Number of live PerfApp displays. Recording is skipped
+        /// entirely while this is zero - there is no consumer for the data
+        /// and the per-update dictionary writes would be pure overhead.</summary>
+        public static int LivePerfApps;
+
+        /// <summary>Playtime baseline in ms. The PLAYTIME shown in the dumps
+        /// is the session time elapsed since the last Perf.Clear() (the
+        /// PerfLog toggle) - not the whole session - so toggling the
+        /// advanced info off and on restarts the clock with the stats.</summary>
+        public static double StartPlayMs = -1;
+
+        /// <summary>Session playtime since the last reset, for the dump
+        /// headers. Falls back to the absolute session time when no reset
+        /// happened yet.</summary>
+        public static TimeSpan ElapsedSinceStart()
+        {
+            double now = MyAPIGateway.Session != null ? MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds : 0;
+            double ms = StartPlayMs > 0 ? now - StartPlayMs : now;
+            if (ms < 0) ms = 0;
+            return TimeSpan.FromMilliseconds(ms);
+        }
+
         public static void Clear()
         {
             Stats.Clear();
             Instances.Clear();
             SlowEvents.Clear();
+            StartPlayMs = MyAPIGateway.Session != null ? MyAPIGateway.Session.ElapsedPlayTime.TotalMilliseconds : -1;
+        }
+
+        /// <summary>Counts an engine Run() invocation for an app (called
+        /// before the slot gate) and tracks the tick gap between calls, so
+        /// PerfApp can show how often the engine calls vs how many calls
+        /// actually do work.</summary>
+        public static void CountInvocation(string app, int tick)
+        {
+            PerfStat s = Stat(app);
+            s.Invoked++;
+            if (s.LastInvokeTick >= 0)
+            {
+                s.InvokeGapSum += tick - s.LastInvokeTick;
+                s.InvokeGapCount++;
+            }
+            s.LastInvokeTick = tick;
         }
 
         public static void Record(string app, string instance, double ms, double playMs)
         {
+            if (StartPlayMs < 0) StartPlayMs = playMs;
             if (++_recordCounter >= 512)
             {
                 _recordCounter = 0;
@@ -1544,7 +1629,7 @@ namespace DisplayApps
                 e.Instance = instance;
                 e.Ms = ms;
                 e.ScanMs = s.LastScanMs;
-                e.PlayTime = TimeSpan.FromMilliseconds(playMs).ToString(@"hh\:mm\:ss");
+                e.PlayTime = TimeSpan.FromMilliseconds(StartPlayMs > 0 ? playMs - StartPlayMs : playMs).ToString(@"hh\:mm\:ss");
                 SlowEvents.Add(e);
             }
         }
@@ -1608,6 +1693,11 @@ namespace DisplayApps
 
         /// <summary>Reused buffer for the stale-entry purge (no per-scan allocation).</summary>
         public static readonly List<long> Stale = new List<long>();
+
+        /// <summary>Gate for the stale-entry purge: once the map is over its
+        /// size limit the purge would walk the whole map on every scan, so it
+        /// only runs on every 8th scan.</summary>
+        public static int EvictCounter;
         static readonly List<T> _pool = new List<T>();
         static readonly List<CacheEntry<T>> _entries = new List<CacheEntry<T>>();
 
