@@ -124,8 +124,8 @@ namespace DisplayApps
             "# TextScroll: Auto-scroll lists that don't fit on screen (true/false, default: false).\n" +
             "TextScroll: false\n" +
             "\n" +
-            "# SubGrids: Also scan blocks on subgrids connected by rotors/pistons/hinges\n" +
-            "#   (true/false, default: false).\n" +
+            "# SubGrids: Also scan blocks on subgrids (rotors/pistons/hinges) and\n" +
+            "#   connector-docked grids (Physical group) (true/false, default: false).\n" +
             "SubGrids: false\n" +
             "\n" +
             "# FullList: Show all item types, also ones with 0 stock, or only the\n" +
@@ -291,7 +291,13 @@ namespace DisplayApps
             if (ConfigSubGrids && MyAPIGateway.GridGroups != null)
             {
                 _subGrids.Clear();
-                MyAPIGateway.GridGroups.GetGroup(grid, VRage.Game.ModAPI.GridLinkTypeEnum.Mechanical, _subGrids);
+                // Use Physical so connector-docked grids (ship via connector)
+                // are also included when SubGrids is enabled - Mechanical
+                // alone misses them (user report: ship connected with
+                // connector shows no damaged blocks). Physical includes
+                // Mechanical+Logical, so rotors/pistons/hinges/wheels and
+                // connectors all share the scan.
+                MyAPIGateway.GridGroups.GetGroup(grid, VRage.Game.ModAPI.GridLinkTypeEnum.Physical, _subGrids);
                 for (int i = 0; i < _subGrids.Count; i++)
                 {
                     if (_subGrids[i] != null) _subGrids[i].GetBlocks(GridBlocks);
@@ -309,7 +315,9 @@ namespace DisplayApps
         /// grid's terminal system - a game-maintained list, so no armor cubes
         /// and no fat-block lookups. The terminal system spans the whole
         /// logical group (mechanical and merge connections), so when SubGrids
-        /// is off only blocks directly on the scan grid are kept. Applies the
+        /// is off only blocks directly on the scan grid are kept. When
+        /// SubGrids is on the Physical group is used so connector-docked
+        /// grids (ship via connector) are also included. Applies the
         /// configured group filter.</summary>
         protected void RefreshTerminalBlocks()
         {
@@ -328,6 +336,38 @@ namespace DisplayApps
                 for (int i = 0; i < TerminalBlocks.Count; i++)
                     if (TerminalBlocks[i].CubeGrid == grid) TerminalBlocks[w++] = TerminalBlocks[i];
                 if (w < TerminalBlocks.Count) TerminalBlocks.RemoveRange(w, TerminalBlocks.Count - w);
+            }
+            else if (MyAPIGateway.GridGroups != null)
+            {
+                // Logical group already contains Mechanical (rotors/pistons/
+                // hinges). For connector-docked ships the Physical group is
+                // larger - merge those terminal blocks as well when SubGrids
+                // is enabled so Damage/Storage/etc. see the whole ship.
+                _subGrids.Clear();
+                MyAPIGateway.GridGroups.GetGroup(grid, VRage.Game.ModAPI.GridLinkTypeEnum.Physical, _subGrids);
+                // _subGrids now holds the Physical group. Any grid in it
+                // whose CubeGrid != grid and not already in TerminalBlocks
+                // needs its terminal blocks added.
+                for (int i = 0; i < _subGrids.Count; i++)
+                {
+                    var g = _subGrids[i];
+                    if (g == null || g == grid) continue;
+                    // Avoid duplicate work if this grid's blocks already
+                    // came via the Logical terminal system (Mechanical
+                    // subgrids already in ts.GetBlocks).
+                    bool already = false;
+                    for (int k = 0; k < TerminalBlocks.Count; k++)
+                        if (TerminalBlocks[k].CubeGrid == g) { already = true; break; }
+                    if (already) continue;
+                    var otherTs = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(g);
+                    if (otherTs == null) continue;
+                    int before = TerminalBlocks.Count;
+                    otherTs.GetBlocks(TerminalBlocks);
+                    // otherTs.GetBlocks appends; ensure we don't double-add
+                    // the same grid's blocks if GetBlocks returned the whole
+                    // Physical group already (defensive).
+                    if (TerminalBlocks.Count > before + 2000) break; // sanity
+                }
             }
             ApplyGroupFilter();
             _lastScanBlocks = TerminalBlocks.Count;
@@ -1296,9 +1336,9 @@ namespace DisplayApps
             long key = grid.EntityId;
             if (ConfigSubGrids)
             {
-                while (grid.Parent != null) grid = (VRage.Game.ModAPI.IMyCubeGrid)grid.Parent;
-                key = grid.EntityId;
+                key = GetMechanicalGroupKey(grid);
             }
+            key = key * 397 + (ConfigSubGrids ? 1 : 0);
             key = key * 397 + (ConfigRemoteName.Length > 0 ? 1 : 0);
             key = key * 397 + (ConfigFullList ? 1 : 0);
             key = key * 397 + ConfigStorageType;
@@ -1364,15 +1404,47 @@ namespace DisplayApps
         }
 
         /// <summary>EntityId of the grid the current scan targets (remote grid
-        /// when configured, else the display's own grid). 0 when unknown.</summary>
+        /// when configured, else the display's own grid). When SubGrids is
+        /// enabled the mechanical group is scanned, so the id is the group's
+        /// representative (shared by all LCDs on that ship and its subgrids)
+        /// so highlights and cache entries are shared; otherwise it is the
+        /// single grid's id. 0 when unknown.</summary>
         protected long ScanGridId
         {
             get
             {
-                if (_scanGrid != null) return _scanGrid.EntityId;
-                return Block != null && Block.CubeGrid != null ? Block.CubeGrid.EntityId : 0;
+                var g = _scanGrid ?? (Block != null ? (VRage.Game.ModAPI.IMyCubeGrid)Block.CubeGrid : null);
+                if (g == null) return 0;
+                if (ConfigSubGrids) return GetMechanicalGroupKey(g);
+                return g.EntityId;
             }
         }
+
+        long GetMechanicalGroupKey(VRage.Game.ModAPI.IMyCubeGrid grid)
+        {
+            if (grid == null) return 0;
+            if (MyAPIGateway.GridGroups == null)
+            {
+                while (grid.Parent != null) grid = (VRage.Game.ModAPI.IMyCubeGrid)grid.Parent;
+                return grid.EntityId;
+            }
+            // Use a temporary buffer so we don't clobber the instance _subGrids
+            // that RefreshGridBlocks also uses (GetGridScan runs just before the
+            // scan's RefreshGridBlocks, which will repopulate _subGrids anyway).
+            var buf = _scanGroupBuffer;
+            buf.Clear();
+            MyAPIGateway.GridGroups.GetGroup(grid, VRage.Game.ModAPI.GridLinkTypeEnum.Physical, buf);
+            if (buf.Count == 0) return grid.EntityId;
+            long min = buf[0].EntityId;
+            for (int i = 1; i < buf.Count; i++)
+            {
+                var e = buf[i];
+                if (e != null && e.EntityId < min) min = e.EntityId;
+            }
+            return min;
+        }
+
+        static readonly List<VRage.Game.ModAPI.IMyCubeGrid> _scanGroupBuffer = new List<VRage.Game.ModAPI.IMyCubeGrid>(8);
 
         /// <summary>The grid the current scan targets: the remote grid when
         /// configured, else the LCD's own grid. Named CurrentScanGrid so it

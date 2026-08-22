@@ -24,14 +24,14 @@ namespace DisplayApps
         {
             public long Window = -1;
             public long WantWindow = -1;
-            public readonly HashSet<string> Applied = new HashSet<string>();
+            public readonly HashSet<long> Applied = new HashSet<long>();
         }
 
         static readonly Dictionary<long, GridHighlights> _hlByGrid = new Dictionary<long, GridHighlights>();
 
         /// <summary>Reused "currently wanted" set - cleared per update instead of
         /// allocating a fresh HashSet every frame.</summary>
-        static readonly HashSet<string> _wanted = new HashSet<string>();
+        static readonly HashSet<long> _wanted = new HashSet<long>();
 
         /// <summary>Display name and icon per block definition. Damaged armor
         /// fields share a handful of definitions, so the localization lookup
@@ -63,9 +63,12 @@ namespace DisplayApps
             public readonly List<DamageRow> Rows = new List<DamageRow>();
             readonly List<DamageRow> _pool = new List<DamageRow>();
 
-            /// <summary>Names of the worst HighlightCount fat blocks, collected
-            /// scan-side so every display shares the selection.</summary>
-            public readonly List<string> HlNames = new List<string>();
+            /// <summary>EntityIds of the worst HighlightCount fat blocks, collected
+            /// scan-side so every display shares the selection. Stored as
+            /// EntityId (long) not Name string so renaming the block does not
+            /// orphan the highlight (old Name string would no longer resolve
+            /// via TryGetEntityByName and the -1 clear would be lost).</summary>
+            public readonly List<long> HlNames = new List<long>();
 
             public string CountText;
 
@@ -158,9 +161,9 @@ namespace DisplayApps
         }
 
         /// <summary>Keeps the highlight outline on the worst HighlightCount
-        /// blocks of this display's scan grid. The candidate names come from
-        /// the shared scan, so the diff and the SetHighlightLocal calls run
-        /// once per grid per window, no matter how many displays show it.
+        /// blocks of this display's scan grid. The candidate EntityIds come
+        /// from the shared scan, so the diff and the SetHighlightLocal calls
+        /// run once per grid per window, no matter how many displays show it.
         /// Wanted highlights are re-applied every window because the game
         /// drops the outline when a block's damage model state changes. When
         /// no display on the grid has wanted highlights for over a window,
@@ -170,6 +173,17 @@ namespace DisplayApps
             long gridId = ScanGridId;
             if (gridId == 0) return;
             long window = Window();
+
+            // If the scan grid changed (e.g. SubGrids toggled, RemoteGrid
+            // changed, or ship split) the previous grid's highlights would
+            // otherwise stay orphaned in _hlByGrid forever - no display will
+            // ever update that old gridId again. Clear the old.
+            if (_hlGridId != 0 && _hlGridId != gridId)
+            {
+                GridHighlights oldHl;
+                if (_hlByGrid.TryGetValue(_hlGridId, out oldHl))
+                    ClearGrid(_hlGridId, oldHl);
+            }
 
             GridHighlights hl;
             _hlByGrid.TryGetValue(gridId, out hl);
@@ -190,14 +204,14 @@ namespace DisplayApps
                 for (int i = 0; i < scan.HlNames.Count; i++)
                     _wanted.Add(scan.HlNames[i]);
 
-                foreach (var name in hl.Applied)
+                foreach (var id in hl.Applied)
                 {
-                    if (!_wanted.Contains(name))
-                        SetBlockHighlight(name, false);
+                    if (!_wanted.Contains(id))
+                        SetBlockHighlight(id, false);
                 }
-                foreach (var name in _wanted)
+                foreach (var id in _wanted)
                 {
-                    SetBlockHighlight(name, true);
+                    SetBlockHighlight(id, true);
                 }
 
                 hl.Applied.Clear();
@@ -211,14 +225,53 @@ namespace DisplayApps
 
         static void ClearGrid(long gridId, GridHighlights hl)
         {
-            foreach (var name in hl.Applied)
-                SetBlockHighlight(name, false);
+            foreach (var id in hl.Applied)
+                SetBlockHighlight(id, false);
             hl.Applied.Clear();
             _hlByGrid.Remove(gridId);
         }
 
+        static void SetBlockHighlight(long entityId, bool on)
+        {
+            try
+            {
+                var entity = MyAPIGateway.Entities.GetEntityById(entityId);
+                string curName = null;
+                if (entity != null)
+                {
+                    var term = entity as Sandbox.ModAPI.IMyTerminalBlock;
+                    if (term != null) curName = term.Name;
+                    if (string.IsNullOrEmpty(curName))
+                    {
+                        // Original code mutated Name to EntityId at scan time
+                        // so TryGetEntityByName(idStr) could find empty-Name
+                        // blocks. Do it here at highlight time as well.
+                        try { var e = entity as VRage.ModAPI.IMyEntity; if (e != null) e.Name = entityId.ToString(); } catch { }
+                        try { if (term != null) term.Name = entityId.ToString(); } catch { }
+                        curName = entityId.ToString();
+                    }
+                }
+                string idStr = entityId.ToString();
+                string primary = !string.IsNullOrEmpty(curName) ? curName : idStr;
+                if (on)
+                    MyVisualScriptLogicProvider.SetHighlightLocal(primary, thickness: 2, pulseTimeInFrames: 0, color: new Color(220, 60, 50));
+                else
+                    MyVisualScriptLogicProvider.SetHighlightLocal(primary, thickness: -1);
+                if (entity != null && curName != null && curName != idStr && !string.IsNullOrEmpty(curName))
+                {
+                    if (on)
+                        MyVisualScriptLogicProvider.SetHighlightLocal(idStr, thickness: 2, pulseTimeInFrames: 0, color: new Color(220, 60, 50));
+                    else
+                        MyVisualScriptLogicProvider.SetHighlightLocal(idStr, thickness: -1);
+                }
+            }
+            catch { }
+        }
+
+        // Legacy overload kept for any external callers (not used internally)
         static void SetBlockHighlight(string name, bool on)
         {
+            if (string.IsNullOrEmpty(name)) return;
             if (on)
                 MyVisualScriptLogicProvider.SetHighlightLocal(name, thickness: 2, pulseTimeInFrames: 0, color: new Color(220, 60, 50));
             else
@@ -280,17 +333,17 @@ namespace DisplayApps
             scan.Rows.Sort((a, b) => b.Ratio.CompareTo(a.Ratio));
 
             // Worst HighlightCount fat blocks (the end of the list - sorted
-            // most complete first). Blocks with an empty entity name get one
-            // registered (EntityId string) - the highlight system resolves
-            // entities by name and silently ignores unknown ones.
+            // most complete first). Stored as stable EntityId and also
+            // ensure empty-Name blocks get a Name so SetHighlightLocal can
+            // find them (original behaviour, now at highlight time as well).
             int found = 0;
             for (int i = scan.Rows.Count - 1; i >= 0 && found < HighlightCount; i--)
             {
                 var fb = scan.Rows[i].Block.FatBlock;
                 if (fb == null) continue;
-                if (string.IsNullOrEmpty(fb.Name))
-                    fb.Name = fb.EntityId.ToString();
-                scan.HlNames.Add(fb.Name);
+                // Keep empty-Name blocks findable (original mutated Name here)
+                try { if (string.IsNullOrEmpty(fb.Name)) fb.Name = fb.EntityId.ToString(); } catch { }
+                scan.HlNames.Add(fb.EntityId);
                 found++;
             }
 

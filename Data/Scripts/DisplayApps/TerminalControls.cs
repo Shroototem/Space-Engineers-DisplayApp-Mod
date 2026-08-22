@@ -56,8 +56,40 @@ namespace DisplayApps
             Type t = typeof(TBlock);
             bool needRegister = !_registered.Contains(t);
             if (!needRegister && _repositioned.Contains(t)) return;
+            // Block existence does not imply terminal control list creation.
+            // Creating the list via GetControls/CreateControl before the game's
+            // CreateTerminalControls has populated it permanently suppresses all
+            // vanilla + other-mod controls (AreControlsCreated becomes true and
+            // the game's early-exit prevents its own adds). Defer until the
+            // factory reports the list exists - this check does NOT create the
+            // list, unlike GetControls/CreateControl/EnsureControlsAreCreated.
+            if (!IsFactoryReady<TBlock>()) return;
             if (needRegister) RegisterFor<TBlock>(MyAPIGateway.TerminalControls);
             RepositionFor<TBlock>();
+        }
+
+        static readonly Dictionary<Type, int> _factoryReadyAttempts = new Dictionary<Type, int>();
+        const int FactoryReadyDeferTicks = 6;
+
+        static bool IsFactoryReady<TBlock>()
+        {
+            // Whitelist-safe heuristic: wait a few Update10 cycles (~600ms)
+            // after the first sighting of the type. BeforeGameLogicInit
+            // schedules CreateTerminalControls for BEFORE_NEXT_FRAME, so a
+            // short defer covers the replication race on clients where the
+            // text-surface script is instantiated before the block's factory
+            // entry exists. This check never calls GetControls/CreateControl,
+            // so it never creates the factory entry prematurely (which would
+            // permanently suppress vanilla controls).
+            Type t = typeof(TBlock);
+            int attempts;
+            _factoryReadyAttempts.TryGetValue(t, out attempts);
+            if (attempts < FactoryReadyDeferTicks)
+            {
+                _factoryReadyAttempts[t] = attempts + 1;
+                return false;
+            }
+            return true;
         }
 
         static readonly HashSet<Type> _registered = new HashSet<Type>();
@@ -91,7 +123,7 @@ namespace DisplayApps
             AddOnOffSwitch<TBlock>(helper, "DisplayApps_TextScroll", "TextScroll",
                 "Auto-scroll lists that don't fit on screen.", AllRegions, "TextScroll", false);
             AddOnOffSwitch<TBlock>(helper, "DisplayApps_SubGrids", "SubGrids",
-                "Also scan blocks on subgrids connected by rotors, pistons and hinges.", AllRegions, "SubGrids", false);
+                "Also scan blocks on subgrids (rotors/pistons/hinges) and connector-docked grids (Physical group).", AllRegions, "SubGrids", false);
             AddOnOffSwitch<TBlock>(helper, "DisplayApps_FullList", "FullList",
                 "Show all item types, including ones with 0 stock.", FullListRegions, "FullList", true);
 
@@ -320,6 +352,12 @@ namespace DisplayApps
             {
                 Type t = typeof(TBlock);
                 if (_repositioned.Contains(t)) return;
+                // Guard: GetControls<T> itself creates the factory entry via
+                // MyTerminalControlFactory.GetList/InitializeControls. If called
+                // before AreControlsCreated, the entry is created with only base
+                // controls and the game's own CreateTerminalControls early-exits
+                // forever (client missing many buttons). Require factory ready.
+                if (!IsFactoryReady<TBlock>()) return;
                 int tries;
                 _repositionTries.TryGetValue(t, out tries);
                 if (tries >= RepositionMaxTries)
@@ -467,6 +505,10 @@ namespace DisplayApps
                 if (!(block is Sandbox.ModAPI.IMyCockpit)) return -1;
                 if (!_screenSelectorSearched)
                 {
+                    // Same guard as EnsureFor: GetControls<IMyCockpit> creates the
+                    // factory entry. Do not search until AreControlsCreated is true,
+                    // otherwise we permanently suppress MyCockpit's own controls.
+                    if (!IsFactoryReady<IMyCockpit>()) return -1;
                     _screenSelectorSearched = true;
                     IMyTerminalControls helper = MyAPIGateway.TerminalControls;
                     if (helper == null) return -1;
