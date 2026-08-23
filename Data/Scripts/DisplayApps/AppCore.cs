@@ -953,18 +953,21 @@ namespace DisplayApps
             Cx = (Left + Right) / 2f;
         }
 
-        /// <summary>Keeps only blocks that belong to one of the configured groups.
-        /// Blocks can only be in a terminal group when they have a fat block.</summary>
-        void ApplyGroupFilter()
+        /// <summary>Fills outIds with the entity ids of every block in the
+        /// configured Groups. Returns true when Groups are configured and the
+        /// lookup ran - an empty set then means no block matched, so callers
+        /// must treat it as "allow nothing", never fall back to whole grid.
+        /// Returns false when no Groups are set (whole-grid mode).</summary>
+        protected bool TryBuildGroupFilter(HashSet<long> outIds)
         {
-            if (ConfigGroups.Count == 0) return;
-            if (MyAPIGateway.TerminalActionsHelper == null) return;
+            outIds.Clear();
+            if (ConfigGroups.Count == 0) return false;
+            if (MyAPIGateway.TerminalActionsHelper == null) return false;
 
             var grid = CurrentScanGrid;
             IMyGridTerminalSystem ts = MyAPIGateway.TerminalActionsHelper.GetTerminalSystemForGrid(grid);
-            if (ts == null) return;
+            if (ts == null) return false;
 
-            _groupIds.Clear();
             _blockGroups.Clear();
             ts.GetBlockGroups(_blockGroups);
 
@@ -987,9 +990,17 @@ namespace DisplayApps
                 g.GetBlocks(_groupBlocks);
                 for (int k = 0; k < _groupBlocks.Count; k++)
                 {
-                    if (_groupBlocks[k] != null) _groupIds.Add(_groupBlocks[k].EntityId);
+                    if (_groupBlocks[k] != null) outIds.Add(_groupBlocks[k].EntityId);
                 }
             }
+            return true;
+        }
+
+        /// <summary>Keeps only blocks that belong to one of the configured groups.
+        /// Blocks can only be in a terminal group when they have a fat block.</summary>
+        void ApplyGroupFilter()
+        {
+            if (!TryBuildGroupFilter(_groupIds)) return;
 
             if (_groupIds.Count == 0)
             {

@@ -69,6 +69,8 @@ namespace DisplayApps
         readonly List<MyTerminalBlock> _doorBlocks = new List<MyTerminalBlock>();
         static readonly Dictionary<long, List<Vector3D>> _gridDoorCache = new Dictionary<long, List<Vector3D>>();
         static readonly Dictionary<long, long> _gridCacheWindow = new Dictionary<long, long>();
+        // Scratch set for the Groups filter of the proximity door cache
+        static readonly HashSet<long> _autoGroupIds = new HashSet<long>();
 
         public AutoDoorApp(MySurface surface, MyCubeBlock block, Vector2 size) : base(surface, block, size)
         {
@@ -86,12 +88,13 @@ namespace DisplayApps
                 AppTerminalControls.EnsureRegistered(Block as MyTerminalBlock);
                 BgColor = Surface.ScriptBackgroundColor;
                 FgColor = Surface.ScriptForegroundColor;
+                // Config first so Groups/AutoOpen/Range changes apply to this tick's door control
+                LoadConfig();
                 // Fast poll: player position and door open/close every Update10
                 FastTick(tick);
                 // Slow poll: draw only at Update100 slot to avoid per-10 drawing cost
                 if ((tick / 10) % 10 != GetUpdateSlot()) return;
                 long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                LoadConfig();
                 RunApp();
                 double ms = (System.Diagnostics.Stopwatch.GetTimestamp() - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
                 MyTerminalBlock tb = Block as MyTerminalBlock;
@@ -112,6 +115,9 @@ namespace DisplayApps
         {
             try
             {
+                // AutoOpen off -> no proximity control at all (matches the
+                // "AUTO OPEN: DISABLED" screen state).
+                if (!GetBool("AutoOpen", true)) return;
                 long window100 = tick / 100;
                 bool cacheNow = window100 != _lastCacheWindow;
                 if (cacheNow)
@@ -247,6 +253,17 @@ namespace DisplayApps
                     try { string cd = d.CustomData ?? ""; if(cd.IndexOf("AutoDoor: false",StringComparison.OrdinalIgnoreCase)>=0) continue; } catch{}
                     // Check enabled auto toggle via CustomData "AutoDoor: true" default true
                     _doorBlocks.Add((MyTerminalBlock)d);
+                }
+                // Groups filter: when Groups are set ONLY doors inside those
+                // groups take part in auto open/close - mirrors the display
+                // list, which is filtered the same way. An empty match set
+                // (group name not found) means no door responds.
+                if (TryBuildGroupFilter(_autoGroupIds))
+                {
+                    int keep = 0;
+                    for (int i = 0; i < _doorBlocks.Count; i++)
+                        if (_autoGroupIds.Contains(_doorBlocks[i].EntityId)) _doorBlocks[keep++] = _doorBlocks[i];
+                    if (keep < _doorBlocks.Count) _doorBlocks.RemoveRange(keep, _doorBlocks.Count - keep);
                 }
                 // Store positions for fast poll
                 var posList = new List<Vector3D>(_doorBlocks.Count);
