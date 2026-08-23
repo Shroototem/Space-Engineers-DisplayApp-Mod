@@ -109,13 +109,39 @@ namespace DisplayApps
             OreScan scan = GetGridScan(_scanFunc);
             _scan = scan;
 
-            using (var frame = BeginAppFrame("ORES & INGOTS", "RAW & REFINED MATERIALS", "MyObjectBuilder_Ore/Iron", new Color(210, 170, 90)))
+            bool showOres = ConfigOreIngotType != 3;
+            bool showIngots = ConfigOreIngotType != 2;
+
+            // Title, subtitle and header icon follow the Ores/Ingots setting
+            string title, subtitle, icon;
+            Color iconColor;
+            if (showOres && showIngots)
+            {
+                title = "ORES & INGOTS";
+                subtitle = "RAW & REFINED MATERIALS";
+                icon = "MyObjectBuilder_Ore/Iron";
+                iconColor = OreBarColor;
+            }
+            else if (showOres)
+            {
+                title = "ORES";
+                subtitle = "RAW MATERIALS";
+                icon = "MyObjectBuilder_Ore/Iron";
+                iconColor = OreBarColor;
+            }
+            else
+            {
+                title = "INGOTS";
+                subtitle = "REFINED MATERIALS";
+                icon = "MyObjectBuilder_Ingot/Iron";
+                iconColor = IngotBarColor;
+            }
+
+            using (var frame = BeginAppFrame(title, subtitle, icon, iconColor))
             {
                 _frame = frame;
                 if (GuardRemoteGrid(frame, scan)) return;
 
-                bool showOres = ConfigOreIngotType != 3;
-                bool showIngots = ConfigOreIngotType != 2;
                 int totalItems = (showOres ? scan.RowOres.Count : 0) + (showIngots ? scan.RowIngots.Count : 0);
 
                 if (totalItems == 0)

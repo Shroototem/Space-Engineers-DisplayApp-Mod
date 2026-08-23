@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using Sandbox.Game.GameSystems.TextSurfaceScripts;
 using Sandbox.ModAPI;
 using VRage.Game.GUI.TextPanel;
@@ -56,6 +57,7 @@ namespace DisplayApps
         static readonly Dictionary<string, string> AppClassToRegion = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             { "AssemblerApp", "AssemblerInfo" },
+            { "AutoDoorApp", "AutoDoors" },
             { "ComponentsApp", "ComponentsInfo" },
             { "DamageApp", "DamageInfo" },
             { "DockedApp", "DockedInfo" },
@@ -63,12 +65,14 @@ namespace DisplayApps
             { "OreIngotApp", "OreIngotInfo" },
             { "PerfApp", "PerfInfo" },
             { "PowerApp", "PowerInfo" },
-            { "StorageApp", "StorageInfo" }
+            { "StorageApp", "StorageInfo" },
+            { "ProjectorApp", "ProjectorInfo" }
         };
 
         static readonly string[] KnownAppRegions =
         {
             "AssemblerInfo",
+            "AutoDoors",
             "ComponentsInfo",
             "DamageInfo",
             "DockedInfo",
@@ -76,7 +80,8 @@ namespace DisplayApps
             "OreIngotInfo",
             "PerfInfo",
             "PowerInfo",
-            "StorageInfo"
+            "StorageInfo",
+            "ProjectorInfo"
         };
 
         static readonly string[] DefaultOptionKeys =
@@ -180,6 +185,12 @@ namespace DisplayApps
             "@end region\n" +
             "\n" +
             "@region StorageInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region ProjectorInfo\n" +
+            "@end region\n" +
+            "\n" +
+            "@region AutoDoors\n" +
             "@end region";
         readonly Dictionary<string, Dictionary<string, string>> _regionValues = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         readonly HashSet<long> _groupIds = new HashSet<long>();
@@ -217,6 +228,25 @@ namespace DisplayApps
             }
             BgColor = surface.ScriptBackgroundColor;
             FgColor = surface.ScriptForegroundColor;
+            // Default to White text on Black background when no CustomData or first app selection.
+            try
+            {
+                var tb0 = block as MyTerminalBlock;
+                string cd0 = tb0 != null ? (tb0.CustomData ?? "") : "";
+                bool noConfig = cd0.IndexOf("@region", StringComparison.OrdinalIgnoreCase) < 0;
+                if (noConfig)
+                {
+                    // Only override when surface still has stock grey colors - respect user custom colors.
+                    // Stock LCD bg is typically dark grey (27,27,27) and fg greyish; force to Black/White.
+                    bool isDefaultBg = BgColor.R < 30 && BgColor.G < 30 && BgColor.B < 30 ? false : true;
+                    // Simpler: always set to Black/White when no config, as requested "If the user selects an app and there is no Custom Data, then set colors to White and Black."
+                    surface.ScriptBackgroundColor = new Color(0, 0, 0);
+                    surface.ScriptForegroundColor = new Color(255, 255, 255);
+                    BgColor = new Color(0, 0, 0);
+                    FgColor = new Color(255, 255, 255);
+                }
+            }
+            catch { }
             S = Math.Min(m_scale.X, m_scale.Y);
             if (S < 0.75f) S = 0.75f;
             Mx = 16f * S;
@@ -412,7 +442,7 @@ namespace DisplayApps
         /// Reads the "@region DEFAULT" and app-specific "@region AppId" config sections from CustomData.
         /// Writes pre-filled template on first run so the settings are visible and easy to edit.
         /// </summary>
-        void LoadConfig()
+        protected void LoadConfig()
         {
             MyTerminalBlock tb = Block as MyTerminalBlock;
             if (tb == null)
@@ -445,6 +475,15 @@ namespace DisplayApps
             if (data.IndexOf("@region", StringComparison.OrdinalIgnoreCase) < 0)
             {
                 tb.CustomData = (data.Length > 0 ? data.TrimEnd() + "\n\n" : "") + ConfigTemplate;
+                // Default colors: White text on Black background when first configuring.
+                try
+                {
+                    Surface.ScriptBackgroundColor = new Color(0, 0, 0);
+                    Surface.ScriptForegroundColor = new Color(255, 255, 255);
+                    BgColor = new Color(0, 0, 0);
+                    FgColor = new Color(255, 255, 255);
+                }
+                catch { }
                 ApplyLayout();
                 return;
             }
@@ -661,6 +700,20 @@ namespace DisplayApps
 
             value = null;
             return false;
+        }
+
+        protected bool GetSectionVisible(string key, bool fallback)
+        {
+            string v;
+            if (TryGetConfigValue(key, out v))
+            {
+                bool b;
+                if (bool.TryParse(v, out b)) return b;
+                // also accept 0/1
+                if (v == "0") return false;
+                if (v == "1") return true;
+            }
+            return fallback;
         }
 
         /// <summary>
@@ -1055,7 +1108,6 @@ namespace DisplayApps
         protected void DrawCenterFlowBar(MySpriteDrawFrame frame, RectangleF bar, float netMW, float maxMW)
         {
             frame.Add(Square("SquareSimple", bar.Center, bar.Size, new Color(22, 26, 36)));
-            frame.Add(Square("SquareSimple", new Vector2(bar.Center.X, bar.Center.Y), new Vector2(2f, bar.Size.Y), new Color(120, 130, 150)));
 
             if (maxMW > 0.0001f)
             {
@@ -1064,7 +1116,7 @@ namespace DisplayApps
 
                 if (Math.Abs(ratio) > 0.001f)
                 {
-                    float fillWidth = Math.Abs(ratio) * halfWidth;
+                    float fillWidth = Math.Abs(ratio) * halfWidth * 0.5f;
                     Color color;
                     Vector2 fillCenter;
                     if (ratio < 0f)
@@ -1077,11 +1129,23 @@ namespace DisplayApps
                         color = new Color(50, 210, 90);
                         fillCenter = new Vector2(bar.Center.X + fillWidth / 2f, bar.Center.Y);
                     }
-                    frame.Add(Square("SquareSimple", fillCenter, new Vector2(fillWidth, bar.Size.Y), color));
+                    // 2px black border - 0.5x smaller
+                    Vector2 borderSize = new Vector2(fillWidth + 4f * S, bar.Size.Y * 0.5f + 4f * S);
+                    Vector2 fillSize = new Vector2(fillWidth, bar.Size.Y * 0.5f);
+                    frame.Add(Square("SquareSimple", fillCenter, borderSize, new Color(0, 0, 0)));
+                    frame.Add(Square("SquareSimple", fillCenter, fillSize, color));
                 }
             }
+            // white center tick on top
+            frame.Add(Square("SquareSimple", new Vector2(bar.Center.X, bar.Center.Y), new Vector2(2f, bar.Size.Y), new Color(220, 230, 240)));
 
             frame.Add(Square("SquareHollow", bar.Center, bar.Size, new Color(80, 90, 105)));
+        }
+
+        // Combined bar reused via CombinedBar class - percentage (R->Y->G) + net on top, white same height as net and never removed
+        protected void DrawCombinedBar(MySpriteDrawFrame frame, RectangleF bar, float storageRatio, Color storageColor, float netFlow, float maxFlow)
+        {
+            CombinedBar.Draw(frame, bar, storageRatio, storageColor, netFlow, maxFlow, S, Top);
         }
 
         protected void AddText(MySpriteDrawFrame frame, string text, Vector2 position, float size, Color color, TextAlignment alignment)
@@ -1096,6 +1160,47 @@ namespace DisplayApps
                 Alignment = alignment,
                 FontId = "White"
             });
+        }
+
+        static readonly Dictionary<string, float> TextWidthCache = new Dictionary<string, float>();
+        static readonly StringBuilder MeasureBuffer = new StringBuilder(64);
+
+        /// <summary>Exact pixel width of text rendered like AddText (White font, given scale),
+        /// via the same measurement the game uses for its own surface scripts.</summary>
+        protected float MeasureTextWidth(string text, float size)
+        {
+            string key = size.ToString("0.####") + "|" + text;
+            float w;
+            if (TextWidthCache.TryGetValue(key, out w)) return w;
+            MeasureBuffer.Clear();
+            MeasureBuffer.Append(text);
+            w = Surface.MeasureStringInPixels(MeasureBuffer, "White", size).X;
+            if (TextWidthCache.Count > 256) TextWidthCache.Clear();
+            TextWidthCache[key] = w;
+            return w;
+        }
+
+        /// <summary>Right-aligned "MAX IN {t} / OUT {t}": MAX white, IN green,
+        /// OUT red, positioned by exact measured widths.</summary>
+        protected void DrawMaxInOut(MySpriteDrawFrame frame, float y, string inTime, string outTime)
+        {
+            float size = 0.36f * S;
+            string maxStr = "MAX";
+            string inStr = "IN " + inTime;
+            string slash = "/";
+            string outStr = "OUT " + outTime;
+            float gap = 4f * S;
+            float maxW = MeasureTextWidth(maxStr, size);
+            float inW = MeasureTextWidth(inStr, size);
+            float slashW = MeasureTextWidth(slash, size);
+            float outW = MeasureTextWidth(outStr, size);
+            float startX = Right - (maxW + inW + slashW + outW + 3f * gap);
+            if (startX < Left + 140f * S) startX = Left + 140f * S;
+            float x = startX;
+            AddText(frame, maxStr, new Vector2(x, y), size, FgColor, TextAlignment.LEFT); x += maxW + gap;
+            AddText(frame, inStr, new Vector2(x, y), size, new Color(50, 210, 90), TextAlignment.LEFT); x += inW + gap;
+            AddText(frame, slash, new Vector2(x, y), size, new Color(130, 135, 145), TextAlignment.LEFT); x += slashW + gap;
+            AddText(frame, outStr, new Vector2(x, y), size, new Color(230, 60, 50), TextAlignment.LEFT);
         }
 
         protected void DrawEmpty(MySpriteDrawFrame frame, string message)
@@ -1853,15 +1958,15 @@ namespace DisplayApps
         /// <summary>All vanilla ore subtypes with an icon in the sprite library.</summary>
         public static readonly List<string> Ores = new List<string>
         {
-            "Stone", "Ice", "Iron", "Gold", "Silver", "Copper", "Nickel", "Cobalt",
-            "Magnesium", "Silicon", "Uranium", "Platinum", "Scandium"
+            "Stone", "Ice", "Iron", "Gold", "Silver", "Nickel", "Cobalt",
+            "Magnesium", "Silicon", "Uranium", "Platinum"
         };
 
         /// <summary>All vanilla ingot subtypes with an icon in the sprite library.</summary>
         public static readonly List<string> Ingots = new List<string>
         {
-            "Gravel", "Iron", "Gold", "Silver", "Copper", "Nickel", "Cobalt",
-            "Magnesium", "Silicon", "Uranium", "Platinum", "Scandium"
+            "Gravel", "Iron", "Gold", "Silver", "Nickel", "Cobalt",
+            "Magnesium", "Silicon", "Uranium", "Platinum"
         };
 
         /// <summary>All vanilla component subtypes with an icon in the sprite library.</summary>

@@ -32,10 +32,21 @@ namespace DisplayApps
             public string Details;
         }
 
+        class PowerDrawRow
+        {
+            public string Name;
+            public string Icon;
+            public float PowerMW;
+            public float Ratio;
+            public string Value;
+        }
+
         class PowerScan : IScanData
         {
             public readonly List<BatteryRow> Batteries = new List<BatteryRow>();
             readonly List<BatteryRow> _rowPool = new List<BatteryRow>();
+            public readonly List<PowerDrawRow> TopDraws = new List<PowerDrawRow>();
+            public readonly List<PowerDrawRow> _drawPool = new List<PowerDrawRow>();
             public float SolarCur, SolarMax, WindCur, WindMax, ReactCur, ReactMax, EngCur, EngMax;
             public BatterySummary Bat;
             public int SolarCount, WindCount, ReactCount, EngCount, BatCount;
@@ -44,13 +55,15 @@ namespace DisplayApps
             // Per-battery row strings are built in the scan too - the scan is
             // shared per grid per window, so precomputing them is cheaper than
             // per-display reads and formatting.
-            public string StorageText, FlowText, MinTimeText, BatHeader;
+            public string StorageText, FlowText, FlowShortText, BatHeader, DrawHeader;
             public readonly string[] CatTexts = new string[4];
             public readonly float[] CatRatios = new float[4];
 
             public void Clear()
             {
                 _rowPool.AddRange(Batteries);
+                _drawPool.AddRange(TopDraws);
+                TopDraws.Clear();
                 Batteries.Clear();
                 SolarCur = 0f;
                 SolarMax = 0f;
@@ -68,8 +81,9 @@ namespace DisplayApps
                 BatCount = 0;
                 StorageText = null;
                 FlowText = null;
-                MinTimeText = null;
+                FlowShortText = null;
                 BatHeader = null;
+                DrawHeader = null;
                 for (int i = 0; i < CatTexts.Length; i++)
                 {
                     CatTexts[i] = null;
@@ -87,18 +101,31 @@ namespace DisplayApps
                 }
                 return new BatteryRow();
             }
+
+            public PowerDrawRow RentDrawRow()
+            {
+                if (_drawPool.Count > 0)
+                {
+                    var r = _drawPool[_drawPool.Count-1];
+                    _drawPool.RemoveAt(_drawPool.Count-1);
+                    return r;
+                }
+                return new PowerDrawRow();
+            }
         }
 
         readonly Func<PowerScan> _scanFunc;
         MySpriteDrawFrame _frame;
         PowerScan _scan;
         readonly Action<int, float> _drawBatteryRow;
+        readonly Action<int, float> _drawTopRow;
 
         public PowerApp(MySurface surface, MyCubeBlock block, Vector2 size)
             : base(surface, block, size)
         {
             _scanFunc = ScanGrid;
             _drawBatteryRow = DrawBatteryRow;
+            _drawTopRow = DrawTopRow;
         }
 
         protected override void RunApp()
@@ -124,51 +151,131 @@ namespace DisplayApps
                     return;
                 }
 
-                float batRatio = batMaxStored > 0f ? batStored / batMaxStored : 0f;
-                AddText(frame, "BATTERY STORAGE", new Vector2(Left, 52f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, scan.StorageText, new Vector2(Right, 52f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                bool showStorage = GetSectionVisible("ShowStorage", true);
+                bool showFlow = GetSectionVisible("ShowFlow", true);
+                bool showBreakdown = GetSectionVisible("ShowBreakdown", true);
+                bool showBatteries = GetSectionVisible("ShowBatteries", true);
+                bool showTopDraws = GetSectionVisible("ShowTopDraws", true);
 
-                RectangleF batBar = new RectangleF(new Vector2(Left, 68f * S), new Vector2(Right - Left, 14f * S));
-                DrawBar(frame, batBar, batRatio, BarColor(batRatio));
-
-                AddText(frame, "NET POWER FLOW", new Vector2(Left, 88f * S), 0.48f * S, new Color(180, 190, 205), TextAlignment.LEFT);
-                AddText(frame, scan.FlowText, new Vector2(Right, 88f * S), 0.48f * S, netBat > 0.001f ? new Color(50, 210, 90) : (netBat < -0.001f ? new Color(230, 60, 50) : new Color(160, 170, 185)), TextAlignment.RIGHT);
-
-                RectangleF flowBar = new RectangleF(new Vector2(Left, 104f * S), new Vector2(Right - Left, 14f * S));
-                DrawCenterFlowBar(frame, flowBar, netBat, batMaxOut > 0f ? batMaxOut : 10f);
-
-                AddText(frame, "TIME AT MAX OUTPUT", new Vector2(Left, 122f * S), 0.44f * S, new Color(140, 145, 155), TextAlignment.LEFT);
-                AddText(frame, scan.MinTimeText, new Vector2(Right, 122f * S), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
-
-                DrawDivider(frame, 138f);
-                AddText(frame, "POWER SOURCE BREAKDOWN", new Vector2(Left, 144f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
-
-                float catY = 162f * S;
-                float catH = 26f * S;
-
-                int catIdx = 0;
-                if (solarCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "SOLAR PANELS", "MyObjectBuilder_Component/SolarCell", solarCount, scan.CatTexts[0], scan.CatRatios[0], CatColor(solarCount, scan.SolarCur), catY + catIdx++ * catH);
-                if (windCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "WIND TURBINES", "MyObjectBuilder_Component/Motor", windCount, scan.CatTexts[1], scan.CatRatios[1], CatColor(windCount, scan.WindCur), catY + catIdx++ * catH);
-                if (reactCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "NUCLEAR REACTORS", "MyObjectBuilder_Component/Reactor", reactCount, scan.CatTexts[2], scan.CatRatios[2], CatColor(reactCount, scan.ReactCur), catY + catIdx++ * catH);
-                if (engCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "HYDRO ENGINES", "IconHydrogen", engCount, scan.CatTexts[3], scan.CatRatios[3], CatColor(engCount, scan.EngCur), catY + catIdx++ * catH);
-
-                float batListTop = catY + (catIdx + 0.2f) * catH;
-                float availH = Bottom - batListTop;
-
-                if (availH > 50f * S && batCount > 0)
+                float y = 52f * S;
+                if (showStorage)
                 {
-                    DrawDivider(frame, (batListTop) / S);
+                    float batRatio = batMaxStored > 0f ? batStored / batMaxStored : 0f;
+                    AddText(frame, "BATTERY STORAGE", new Vector2(Left, y), 0.50f * S, FgColor, TextAlignment.LEFT);
+                    AddText(frame, scan.StorageText, new Vector2(Right, y), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                    y += 16f * S;
+                    if (showFlow)
+                    {
+                        AddText(frame, scan.FlowShortText, new Vector2(Left, y), 0.42f * S,
+                            netBat > 0.001f ? new Color(50, 210, 90) : (netBat < -0.001f ? new Color(230, 60, 50) : new Color(130, 135, 145)),
+                            TextAlignment.LEFT);
+                        // MAX white / IN green / OUT red - static times at max output rate
+                        string inT = batMaxOut > 0.001f ? FormatTimeHours((batMaxStored - batStored) / batMaxOut) : "--";
+                        string outT = batMaxOut > 0.001f ? FormatTimeHours(batStored / batMaxOut) : "--";
+                        DrawMaxInOut(frame, y, inT, outT);
+                        y += 18f * S;
+                    }
+                    else y += 2f * S;
+                    RectangleF batBar = new RectangleF(new Vector2(Left, y), new Vector2(Right - Left, 14f * S));
+                    float netForBar = showFlow ? netBat : 0f;
+                    float maxForBar = showFlow ? (batMaxOut > 0f ? batMaxOut : 10f) : 100f;
+                    // Reuse CombinedBar class for percentage (R->Y->G) + net on top, white same height as net
+                    DrawCombinedBar(frame, batBar, batRatio, BarColor(batRatio), netForBar, maxForBar);
+                    y += 20f * S;
+                }
+                else if (showFlow)
+                {
+                    AddText(frame, "NET POWER FLOW", new Vector2(Left, y), 0.48f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                    AddText(frame, scan.FlowText, new Vector2(Right, y), 0.48f * S, netBat > 0.001f ? new Color(50, 210, 90) : (netBat < -0.001f ? new Color(230, 60, 50) : new Color(160, 170, 185)), TextAlignment.RIGHT);
+                    y += 16f * S;
+                    RectangleF flowBar = new RectangleF(new Vector2(Left, y), new Vector2(Right - Left, 14f * S));
+                    DrawCenterFlowBar(frame, flowBar, netBat, batMaxOut > 0f ? batMaxOut : 10f);
+                    y += 20f * S;
+                }
 
-                    float rowTopStart = batListTop + 24f * S;
+                if (showBreakdown)
+                {
+                    DrawDivider(frame, y / S);
+                    y += 6f * S;
+                    AddText(frame, "POWER SOURCE BREAKDOWN", new Vector2(Left, y), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                    y += 18f * S;
+
+                    float catH = 26f * S;
+                    int catIdx = 0;
+                    if (solarCount > 0 || ConfigFullList)
+                    {
+                        DrawCategoryRow(frame, "SOLAR PANELS", "MyObjectBuilder_Component/SolarCell", solarCount, scan.CatTexts[0], scan.CatRatios[0], CatColor(solarCount, scan.SolarCur), y + catIdx * catH);
+                        catIdx++;
+                    }
+                    if (windCount > 0 || ConfigFullList)
+                    {
+                        DrawCategoryRow(frame, "WIND TURBINES", "MyObjectBuilder_Component/Motor", windCount, scan.CatTexts[1], scan.CatRatios[1], CatColor(windCount, scan.WindCur), y + catIdx * catH);
+                        catIdx++;
+                    }
+                    if (reactCount > 0 || ConfigFullList)
+                    {
+                        DrawCategoryRow(frame, "NUCLEAR REACTORS", "MyObjectBuilder_Component/Reactor", reactCount, scan.CatTexts[2], scan.CatRatios[2], CatColor(reactCount, scan.ReactCur), y + catIdx * catH);
+                        catIdx++;
+                    }
+                    if (engCount > 0 || ConfigFullList)
+                    {
+                        DrawCategoryRow(frame, "HYDRO ENGINES", "IconHydrogen", engCount, scan.CatTexts[3], scan.CatRatios[3], CatColor(engCount, scan.EngCur), y + catIdx * catH);
+                        catIdx++;
+                    }
+                    y += catIdx * catH + 6f * S;
+                }
+                else
+                {
+                    y += 6f * S;
+                }
+
+                float listY = y;
+                bool hasBatteries = showBatteries && batCount > 0;
+                bool hasTop = showTopDraws && scan.TopDraws.Count > 0;
+                int groups = (hasBatteries?1:0)+(hasTop?1:0);
+                if (groups == 0) return;
+
+                float availH = Bottom - listY;
+                if (availH < 40f * S) return;
+
+                if (groups == 2 && availH > 80f * S)
+                {
+                    float headerH = 18f * S;
+                    float gap = 6f * S;
+                    float gh = ListGroupHeight(availH, 2, headerH, gap);
+                    float top = listY;
+                    if (hasBatteries)
+                    {
+                        DrawListGroup(frame, 0, scan.BatHeader, scan.Batteries.Count, top, headerH, gh, 40f*S, _drawBatteryRow);
+                        top = ListGroupTop(listY, 1, gh, headerH, gap);
+                        if (hasTop)
+                        {
+                            DrawDivider(frame, (listY+headerH+gh+gap/2f)/S);
+                            DrawListGroup(frame, 1, scan.DrawHeader, scan.TopDraws.Count, top, headerH, gh, 24f*S, _drawTopRow);
+                        }
+                    }
+                    else if (hasTop)
+                    {
+                        DrawListGroup(frame, 0, scan.DrawHeader, scan.TopDraws.Count, top, headerH, gh, 24f*S, _drawTopRow);
+                    }
+                }
+                else if (hasBatteries)
+                {
+                    DrawDivider(frame, (listY) / S);
+                    float rowTopStart = listY + 24f * S;
                     int rows = DrawListGroup(frame, 0, scan.BatHeader, scan.Batteries.Count,
-                        batListTop + 6f * S, 18f * S, Bottom - rowTopStart, 40f * S, _drawBatteryRow);
-
+                        listY + 6f * S, 18f * S, Bottom - rowTopStart, 40f * S, _drawBatteryRow);
                     if (!ConfigScroll && batCount > rows)
                         DrawMore(frame, $"+{batCount - rows} MORE BATTERY(IES)");
+                }
+                else if (hasTop)
+                {
+                    DrawDivider(frame, (listY) / S);
+                    float rowTopStart = listY + 24f * S;
+                    int rows = DrawListGroup(frame, 0, scan.DrawHeader, scan.TopDraws.Count,
+                        listY + 6f * S, 18f * S, Bottom - rowTopStart, 24f*S, _drawTopRow);
+                    if (!ConfigScroll && scan.TopDraws.Count > rows)
+                        DrawMore(frame, $"+{scan.TopDraws.Count - rows} MORE");
                 }
             }
         }
@@ -257,7 +364,37 @@ namespace DisplayApps
                     scan.EngCur += (float)e.CurrentOutput;
                     scan.EngMax += (float)e.MaxOutput;
                     scan.EngCount++;
+                    continue;
                 }
+                // Top power draws: estimate consumption for functional blocks (no reflection, whitelist safe)
+                try
+                {
+                    var func = b as Sandbox.ModAPI.IMyFunctionalBlock;
+                    if (func != null && func.Enabled)
+                    {
+                        float draw = 0f;
+                        string tName = "";
+                        string sub = "";
+                        try { tName = b.BlockDefinition.TypeIdString ?? ""; } catch{}
+                        try { sub = b.BlockDefinition.SubtypeId ?? ""; } catch{}
+                        if (tName.Contains("Refinery") || sub.Contains("Refinery")) draw = 0.56f;
+                        else if (tName.Contains("Assembler")) draw = 0.56f;
+                        else if (tName.Contains("Laser") || sub.Contains("Laser")) draw = 2f;
+                        else if (tName.Contains("Thruster") && func.IsWorking) draw = 1f;
+                        else if (func.IsWorking) draw = 0.1f;
+                        else draw = 0f;
+                        if (draw>0.001f)
+                        {
+                            var row = scan.RentDrawRow();
+                            row.Name = Truncate(BlockName(b), 18);
+                            row.Icon = "MyObjectBuilder_Component/PowerCell";
+                            row.PowerMW = draw;
+                            row.Value = draw.ToString("0.00") + " MW";
+                            scan.TopDraws.Add(row);
+                        }
+                    }
+                }
+                catch{}
             }
 
             // Grid-wide strings - pure functions of the totals above.
@@ -274,9 +411,9 @@ namespace DisplayApps
                 flowLabel = $"{netBat:0.00} MW OUT ({FormatTimeHours(batStored / -netBat)} TO EMPTY)";
             scan.FlowText = flowLabel;
 
-            scan.MinTimeText = "--";
-            if (batMaxOut > 0.001f && batMaxStored > 0.001f)
-                scan.MinTimeText = $"EMPTY {FormatTimeHours(batStored / batMaxOut)}   |   FULL {FormatTimeHours((batMaxStored - batStored) / batMaxOut)}";
+            if (netBat > 0.001f) scan.FlowShortText = $"+{netBat:0.00} MW";
+            else if (netBat < -0.001f) scan.FlowShortText = $"{netBat:0.00} MW";
+            else scan.FlowShortText = "0.00 MW (IDLE)";
 
             scan.CatTexts[0] = CatValue(scan.SolarCount, scan.SolarCur, scan.SolarMax);
             scan.CatRatios[0] = CatRatio(scan.SolarCur, scan.SolarMax);
@@ -287,6 +424,26 @@ namespace DisplayApps
             scan.CatTexts[3] = CatValue(scan.EngCount, scan.EngCur, scan.EngMax);
             scan.CatRatios[3] = CatRatio(scan.EngCur, scan.EngMax);
             scan.BatHeader = "INDIVIDUAL BATTERIES (" + scan.BatCount + ")";
+            // Top draws: sort by power descending, keep top 8
+            if (scan.TopDraws.Count > 0)
+            {
+                scan.TopDraws.Sort((a,b)=> b.PowerMW.CompareTo(a.PowerMW));
+                if (scan.TopDraws.Count > 8)
+                {
+                    // return excess to pool
+                    for(int i=scan.TopDraws.Count-1;i>=8;i--) { scan._drawPool.Add(scan.TopDraws[i]); }
+                    scan.TopDraws.RemoveRange(8, scan.TopDraws.Count-8);
+                }
+                float maxDraw = scan.TopDraws[0].PowerMW;
+                if (maxDraw < 0.001f) maxDraw = 1f;
+                for(int i=0;i<scan.TopDraws.Count;i++)
+                {
+                    var r = scan.TopDraws[i];
+                    r.Ratio = r.PowerMW / maxDraw;
+                    r.Value = $"{r.PowerMW:0.00} MW ({r.Ratio*100f:0}%)";
+                }
+            }
+            scan.DrawHeader = "TOP POWER DRAWS ("+scan.TopDraws.Count+")";
             return scan;
         }
 
@@ -319,6 +476,12 @@ namespace DisplayApps
 
             RectangleF bar = new RectangleF(new Vector2(Left, rowTop + 29f * S), new Vector2(Right - Left, 6f * S));
             DrawBar(_frame, bar, row.Ratio, row.Charging ? new Color(80, 200, 230) : BarColor(row.Ratio));
+        }
+
+        void DrawTopRow(int idx, float y)
+        {
+            var r = _scan.TopDraws[idx];
+            DrawProgressRow(_frame, y, r.Icon, r.Name, r.Value, r.Ratio, new Color(230,80,60));
         }
     }
 }

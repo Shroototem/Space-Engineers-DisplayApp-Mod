@@ -26,8 +26,8 @@ namespace DisplayApps
     {
         static readonly string[] AllRegions =
         {
-            "AssemblerInfo", "ComponentsInfo", "DamageInfo", "DockedInfo", "O2H2",
-            "OreIngotInfo", "PerfInfo", "PowerInfo", "StorageInfo"
+            "AssemblerInfo", "AutoDoors", "ComponentsInfo", "DamageInfo", "DockedInfo", "O2H2",
+            "OreIngotInfo", "PerfInfo", "PowerInfo", "ProjectorInfo", "StorageInfo"
         };
 
         static readonly string[] FullListRegions = { "ComponentsInfo", "OreIngotInfo", "PowerInfo", "StorageInfo" };
@@ -154,6 +154,37 @@ namespace DisplayApps
                 "Unit display for storage: Both (kg & L), kg only or L only.", StorageTypeRegions);
             AddOreIngotType<TBlock>(helper, "DisplayApps_OreIngotType", "OreIngotType",
                 "Which sections the Ores & Ingots app shows: Both, Ores only or Ingots only.", new[] { "OreIngotInfo" });
+
+            // Section toggles - PowerInfo
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowStorage", "Show Battery Storage", "Show/hide Battery Storage section.", new[] { "PowerInfo" }, "ShowStorage", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowFlow", "Show Net Flow", "Show/hide Net Power Flow section.", new[] { "PowerInfo" }, "ShowFlow", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowBreakdown", "Show Breakdown", "Show/hide Power Source Breakdown section.", new[] { "PowerInfo" }, "ShowBreakdown", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowBatteries", "Show Individual Batteries", "Show/hide Individual Batteries list (Battery Storage | Individual Batteries).", new[] { "PowerInfo" }, "ShowBatteries", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowTopDraws", "Show Top Draws", "Show/hide Top Power Draws section.", new[] { "PowerInfo" }, "ShowTopDraws", true);
+            // O2H2
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowH2Storage", "Show H2 Storage", "Show/hide Hydrogen Storage section.", new[] { "O2H2" }, "ShowH2Storage", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowO2Storage", "Show O2 Storage", "Show/hide Oxygen Storage section.", new[] { "O2H2" }, "ShowO2Storage", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowBars", "Show Bars", "Show/hide storage bars (when off shows flow rate).", new[] { "O2H2" }, "ShowBars", false);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowProduction", "Show Production", "Show/hide Oxygen Production section.", new[] { "O2H2" }, "ShowProduction", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowFlowO2", "Show Flow", "Show/hide Net Gas Flow section (like Power).", new[] { "O2H2" }, "ShowFlow", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowTanksVents", "Show Tanks/Vents", "Show/hide Gas Tanks & Vents list.", new[] { "O2H2" }, "ShowTanksVents", true);
+            // Damage
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowDamaged", "Show Damaged", "Show/hide damaged blocks list.", new[] { "DamageInfo" }, "ShowDamaged", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowProjector", "Show Projector", "Show/hide projector missing blocks (Load Repair Projection).", new[] { "DamageInfo" }, "ShowProjector", true);
+            // Docked
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowDamageDocked", "Show Damage %", "Show/hide damage % on each docked ship (shared with DamageInfo).", new[] { "DockedInfo" }, "ShowDamage", true);
+            // Storage
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowTotal", "Show Total Storage", "Show/hide Total Storage section.", new[] { "StorageInfo" }, "ShowTotal", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowBreakdownStor", "Show Breakdown", "Show/hide Material Breakdown section.", new[] { "StorageInfo" }, "ShowBreakdown", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowContainers", "Show Containers", "Show/hide Containers list.", new[] { "StorageInfo" }, "ShowContainers", true);
+            // AutoDoors
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_AutoOpen", "Auto Open Doors", "Enable/disable auto open/close doors on player proximity.", new[] { "AutoDoors" }, "AutoOpen", true);
+            AddMeterSlider<TBlock>(helper, "DisplayApps_DoorRange", "Auto Door Range", "Distance in meters at which doors auto-open (closes at range + 2.5 m). Doors only react to players with suit Broadcasting enabled (default keybind O).", new[] { "AutoDoors" }, "DoorRange", 4f, 1f, 25f);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowGps", "Show GPS", "Show/hide player GPS location.", new[] { "AutoDoors" }, "ShowGps", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowDoors", "Show Doors", "Show/hide doors list.", new[] { "AutoDoors" }, "ShowDoors", true);
+            // Projector
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowProjectors", "Show Projectors", "Show/hide projectors list.", new[] { "ProjectorInfo" }, "ShowProjectors", true);
+            AddOnOffSwitch<TBlock>(helper, "DisplayApps_ShowMissing", "Show Missing", "Show/hide missing blocks list.", new[] { "ProjectorInfo" }, "ShowMissing", true);
         }
 
         static void AddOnOffSwitch<TBlock>(IMyTerminalControls helper, string id, string title, string tooltip, string[] regions, string key, bool defaultValue)
@@ -178,6 +209,19 @@ namespace DisplayApps
             c.Getter = b => ReadFloat(b, key, defaultValue);
             c.Setter = (b, v) => WriteValue(b, key, v.ToString("0.##", CultureInfo.InvariantCulture));
             c.Writer = (b, sb) => sb.Append(ReadFloat(b, key, defaultValue).ToString("0.0x", CultureInfo.InvariantCulture));
+            c.Visible = b => AppActive(b, regions);
+            helper.AddControl<TBlock>(c);
+        }
+
+        static void AddMeterSlider<TBlock>(IMyTerminalControls helper, string id, string title, string tooltip, string[] regions, string key, float defaultValue, float min, float max)
+        {
+            IMyTerminalControlSlider c = helper.CreateControl<IMyTerminalControlSlider, TBlock>(id);
+            c.Title = MyStringId.GetOrCompute(title);
+            c.Tooltip = MyStringId.GetOrCompute(tooltip);
+            c.SetLimits(min, max);
+            c.Getter = b => ReadFloat(b, key, defaultValue);
+            c.Setter = (b, v) => WriteValue(b, key, v.ToString("0.##", CultureInfo.InvariantCulture));
+            c.Writer = (b, sb) => sb.Append(ReadFloat(b, key, defaultValue).ToString("0.#", CultureInfo.InvariantCulture)).Append(" m");
             c.Visible = b => AppActive(b, regions);
             helper.AddControl<TBlock>(c);
         }
@@ -626,6 +670,7 @@ namespace DisplayApps
             switch (region)
             {
                 case "AssemblerInfo": return "Info Assembler";
+                case "AutoDoors": return "Info Auto Doors";
                 case "ComponentsInfo": return "Info Components";
                 case "DamageInfo": return "Info Damaged";
                 case "DockedInfo": return "Info Docked Ships";
@@ -633,6 +678,7 @@ namespace DisplayApps
                 case "OreIngotInfo": return "Info Ores & Ingots";
                 case "PerfInfo": return "Info Performance";
                 case "PowerInfo": return "Info Power";
+                case "ProjectorInfo": return "Info Projector";
                 case "StorageInfo": return "Info Storage";
                 default: return region;
             }

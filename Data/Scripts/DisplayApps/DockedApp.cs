@@ -35,6 +35,9 @@ namespace DisplayApps
             public bool HasO2;
             public BatterySummary Bat;
             public float CargoVol, CargoMax;
+            public float DamagePercent;
+            public string DamageText;
+            public Color DamageColor;
 
             // Row strings/colors, precomputed in the scan so every display on
             // the grid draws without formatting anything.
@@ -159,7 +162,7 @@ namespace DisplayApps
 
                 float y = 74f * S;
                 float bottom = Bottom;
-                float rowH = 36f * S;
+                float rowH = GetSectionVisible("ShowDamage", true) ? 42f * S : 36f * S;
                 int drawn = DrawListGroup(frame, 0, null, ships.Count, y, 0f, bottom - y, rowH, _drawShipRow);
 
                 if (!ConfigScroll && ships.Count > drawn)
@@ -337,6 +340,24 @@ namespace DisplayApps
                 ship.CargoRatio = ship.CargoMax > 0f ? ship.CargoVol / ship.CargoMax : 0f;
                 ship.CargoText = "Cargo " + (ship.CargoRatio * 100f).ToString("0") + "%";
 
+                // Shared damage percent from projectors + damaged blocks (same as DamageApp)
+                try
+                {
+                    float dmg = SharedDamage.GetDamagePercent(grid, window);
+                    ship.DamagePercent = dmg;
+                    if (dmg > 0.5f)
+                    {
+                        ship.DamageText = $"DMG {dmg:0}%";
+                        ship.DamageColor = dmg > 25f ? new Color(220,60,50) : (dmg > 5f ? new Color(230,180,60) : new Color(230,200,90));
+                    }
+                    else
+                    {
+                        ship.DamageText = "OK";
+                        ship.DamageColor = new Color(50,210,90);
+                    }
+                }
+                catch { ship.DamageText = "--"; ship.DamageColor = new Color(140,145,155); }
+
                 scan.Ships.Add(ship);
             }
 
@@ -383,6 +404,16 @@ namespace DisplayApps
 
             RectangleF cargoBar = new RectangleF(new Vector2(Right - 50f * S, y2 + 6f * S), new Vector2(50f * S, 3f * S));
             DrawBar(_frame, cargoBar, ship.CargoRatio, BarColor(ship.CargoRatio));
+
+            // Damage % shared with DamageApp (includes projector missing)
+            bool showDamage = GetSectionVisible("ShowDamage", true);
+            if (showDamage)
+            {
+                float y3 = rowTop + 28f * S;
+                AddText(_frame, ship.DamageText, new Vector2(Left + 42f * S, y3), 0.38f * S, ship.DamageColor, TextAlignment.LEFT);
+                RectangleF dmgBar = new RectangleF(new Vector2(Left + 90f * S, y3 + 5f * S), new Vector2(60f*S, 3f*S));
+                DrawBar(_frame, dmgBar, ship.DamagePercent/100f, ship.DamageColor);
+            }
         }
     }
 }

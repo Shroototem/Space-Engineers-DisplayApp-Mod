@@ -120,37 +120,55 @@ namespace DisplayApps
                     return;
                 }
 
-                AddText(frame, "TOTAL STORAGE", new Vector2(Left, 52f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, scan.TotalText, new Vector2(Right, 52f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                bool showTotal = GetSectionVisible("ShowTotal", true);
+                bool showBreakdown = GetSectionVisible("ShowBreakdown", true);
+                bool showContainers = GetSectionVisible("ShowContainers", true);
 
-                RectangleF volBar = new RectangleF(new Vector2(Left, 68f * S), new Vector2(Right - Left, 14f * S));
-                DrawBar(frame, volBar, scan.VolRatio, BarColor(scan.VolRatio));
+                float y = 52f * S;
+                if (showTotal)
+                {
+                    AddText(frame, "TOTAL STORAGE", new Vector2(Left, y), 0.50f * S, FgColor, TextAlignment.LEFT);
+                    AddText(frame, scan.TotalText, new Vector2(Right, y), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                    y += 16f * S;
+                    RectangleF volBar = new RectangleF(new Vector2(Left, y), new Vector2(Right - Left, 14f * S));
+                    DrawBar(frame, volBar, scan.VolRatio, BarColor(scan.VolRatio));
+                    y += 20f * S;
+                    AddText(frame, "TOTAL MASS", new Vector2(Left, y), 0.50f * S, FgColor, TextAlignment.LEFT);
+                    AddText(frame, scan.MassText, new Vector2(Right, y), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                    y += 22f * S;
+                    DrawDivider(frame, y / S);
+                    y += 6f * S;
+                }
+                else
+                {
+                    y = 52f * S;
+                }
 
-                AddText(frame, "TOTAL MASS", new Vector2(Left, 88f * S), 0.50f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, scan.MassText, new Vector2(Right, 88f * S), 0.50f * S, new Color(200, 205, 215), TextAlignment.RIGHT);
+                if (showBreakdown)
+                {
+                    AddText(frame, "MATERIAL BREAKDOWN", new Vector2(Left, y), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
+                    y += 18f * S;
+                    float catH = 26f * S;
+                    int catIdx = 0;
+                    if (scan.OreCount > 0 || ConfigFullList)
+                        DrawCategoryRow(frame, "ORES", "MyObjectBuilder_Ore/Iron", scan.OreCount, scan.CatTexts[0], scan.CatRatios[0], CatColor(scan.OreCount), y + catIdx++ * catH);
+                    if (scan.IngotCount > 0 || ConfigFullList)
+                        DrawCategoryRow(frame, "INGOTS", "MyObjectBuilder_Ingot/Iron", scan.IngotCount, scan.CatTexts[1], scan.CatRatios[1], CatColor(scan.IngotCount), y + catIdx++ * catH);
+                    if (scan.CompCount > 0 || ConfigFullList)
+                        DrawCategoryRow(frame, "COMPONENTS", "MyObjectBuilder_Component/SteelPlate", scan.CompCount, scan.CatTexts[2], scan.CatRatios[2], CatColor(scan.CompCount), y + catIdx++ * catH);
+                    if (scan.AmmoCount > 0 || ConfigFullList)
+                        DrawCategoryRow(frame, "AMMO", "MyObjectBuilder_AmmoMagazine/NATO_5p56x45mm", scan.AmmoCount, scan.CatTexts[3], scan.CatRatios[3], CatColor(scan.AmmoCount), y + catIdx++ * catH);
+                    if (scan.ToolCount > 0 || ConfigFullList)
+                        DrawCategoryRow(frame, "TOOLS & CANISTERS", "MyObjectBuilder_PhysicalGunObject/HandDrillItem", scan.ToolCount, scan.CatTexts[4], scan.CatRatios[4], CatColor(scan.ToolCount), y + catIdx++ * catH);
+                    if (scan.OtherCount > 0 || ConfigFullList)
+                        DrawCategoryRow(frame, "OTHER", "MyObjectBuilder_Component/SmallTube", scan.OtherCount, scan.CatTexts[5], scan.CatRatios[5], CatColor(scan.OtherCount), y + catIdx++ * catH);
+                    y += catIdx * catH + 6f * S;
+                    DrawDivider(frame, y / S);
+                    y += 6f * S;
+                }
 
-                DrawDivider(frame, 126f);
-                AddText(frame, "MATERIAL BREAKDOWN", new Vector2(Left, 132f * S), 0.50f * S, new Color(180, 190, 205), TextAlignment.LEFT);
-
-                float catY = 150f * S;
-                float catH = 26f * S;
-
-                int catIdx = 0;
-                if (scan.OreCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "ORES", "MyObjectBuilder_Ore/Iron", scan.OreCount, scan.CatTexts[0], scan.CatRatios[0], CatColor(scan.OreCount), catY + catIdx++ * catH);
-                if (scan.IngotCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "INGOTS", "MyObjectBuilder_Ingot/Iron", scan.IngotCount, scan.CatTexts[1], scan.CatRatios[1], CatColor(scan.IngotCount), catY + catIdx++ * catH);
-                if (scan.CompCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "COMPONENTS", "MyObjectBuilder_Component/SteelPlate", scan.CompCount, scan.CatTexts[2], scan.CatRatios[2], CatColor(scan.CompCount), catY + catIdx++ * catH);
-                if (scan.AmmoCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "AMMO", "MyObjectBuilder_AmmoMagazine/NATO_5p56x45mm", scan.AmmoCount, scan.CatTexts[3], scan.CatRatios[3], CatColor(scan.AmmoCount), catY + catIdx++ * catH);
-                if (scan.ToolCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "TOOLS & CANISTERS", "MyObjectBuilder_PhysicalGunObject/HandDrillItem", scan.ToolCount, scan.CatTexts[4], scan.CatRatios[4], CatColor(scan.ToolCount), catY + catIdx++ * catH);
-                if (scan.OtherCount > 0 || ConfigFullList)
-                    DrawCategoryRow(frame, "OTHER", "MyObjectBuilder_Component/SmallTube", scan.OtherCount, scan.CatTexts[5], scan.CatRatios[5], CatColor(scan.OtherCount), catY + catIdx++ * catH);
-
-                float listY = catY + (catIdx + 0.2f) * catH;
-                DrawDivider(frame, (listY) / S);
+                if (!showContainers) return;
+                float listY = y;
                 float rowsTop = listY + 24f * S;
                 int rows = DrawListGroup(frame, 0, scan.ContainersHeader, containers.Count,
                     listY + 6f * S, 18f * S, Bottom - rowsTop, 32f * S, _drawContainerRow);
