@@ -189,7 +189,7 @@ namespace DisplayApps
 
                 // Header includes overall damage % shared with DockedShips
                 string header = scan.CountText;
-                if (scan.DamagePercent > 0.01f) header += $"  |  DAMAGE {scan.DamagePercent:0}%";
+                if (scan.DamagePercent > 0.01f) header += $"  |  DAMAGE {scan.DamagePercent.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%";
                 AddText(frame, header, new Vector2(Left, 48f * S), 0.46f * S, FgColor, TextAlignment.LEFT);
                 AddText(frame, "MOST COMPLETE FIRST", new Vector2(Right, 48f * S), 0.46f * S, new Color(120, 130, 145), TextAlignment.RIGHT);
                 DrawDivider(frame, 60f);
@@ -222,21 +222,21 @@ namespace DisplayApps
                             y2+=16f*S;
                             for(int i=0;i<scan.ProjRows.Count && y2+24f*S<=bottom;i++) { DrawProjRow(i,y2); y2+=24f*S; }
                         }
-                        if (totalRows > drawn) DrawMore(frame,$"+{totalRows-drawn} MORE");
+                        if (totalRows > drawn) DrawMore(frame,$"+{(totalRows-drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                     }
                 }
                 else if (showDamage)
                 {
                     int drawn = DrawListGroup(frame, 0, null, scan.Rows.Count, y, 0f, bottom - y, 24f * S, _drawRow);
                     if (!ConfigScroll && scan.Rows.Count > drawn)
-                        DrawMore(frame, $"+{scan.Rows.Count - drawn} MORE");
+                        DrawMore(frame, $"+{(scan.Rows.Count - drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                 }
                 else if (showProjector)
                 {
                     if (scan.ProjRows.Count==0) { DrawEmpty(frame,"NO PROJECTOR DAMAGE"); return; }
                     int drawn = DrawListGroup(frame, 0, scan.ProjText, scan.ProjRows.Count, y, 16f*S, bottom - y, 24f*S, _drawProjRow);
                     if (!ConfigScroll && scan.ProjRows.Count > drawn)
-                        DrawMore(frame, $"+{scan.ProjRows.Count - drawn} MORE");
+                        DrawMore(frame, $"+{(scan.ProjRows.Count - drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                 }
             }
         }
@@ -460,14 +460,14 @@ namespace DisplayApps
                 }
             }
             scan.ProjMissing = projMissing;
-            scan.ProjText = "PROJECTOR MISSING ("+scan.ProjRows.Count+" types, "+projMissing+" blocks)";
+            scan.ProjText = "PROJECTOR MISSING ("+scan.ProjRows.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+" types, "+projMissing.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+" blocks)";
             // Overall damage percent including projectors - shared with DockedShips
             int totalBlocks = Math.Max(GridBlocks.Count,1);
             int damagedTotal = scan.Rows.Count + projMissing;
             scan.DamagePercent = (float)damagedTotal / totalBlocks * 100f;
             if (scan.DamagePercent>100f) scan.DamagePercent=100f;
-            scan.CountText = "WELDING REQUIRED: " + scan.Rows.Count + " BLOCK(S)";
-            if (projMissing>0) scan.CountText += $" +{projMissing} PROJ";
+            scan.CountText = "WELDING REQUIRED: " + scan.Rows.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " BLOCK(S)";
+            if (projMissing>0) scan.CountText += $" +{projMissing.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} PROJ";
             return scan;
         }
 

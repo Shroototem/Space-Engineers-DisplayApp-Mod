@@ -178,7 +178,7 @@ namespace DisplayApps
                 if (!ConfigScroll && clipped)
                 {
                     int remaining = assemblers.Count - drawn + 1;
-                    DrawMore(frame, $"+{remaining} MORE ASSEMBLER(S)");
+                    DrawMore(frame, $"+{remaining.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE ASSEMBLER(S)");
                 }
             }
         }
@@ -249,15 +249,15 @@ namespace DisplayApps
                 for (int k = 0; k < data.Items.Count; k++)
                 {
                     QueueEntry entry = data.Items[k];
-                    entry.AmountText = "x" + entry.Amount.ToString("0.##");
+                    entry.AmountText = "x" + entry.Amount.ToString("#,0.##", System.Globalization.CultureInfo.InvariantCulture);
                 }
                 scan.QueueItems += data.Items.Count;
                 scan.Assemblers.Add(data);
             }
 
             scan.Assemblers.Sort((x, y) => string.Compare(x.Name, y.Name, StringComparison.Ordinal));
-            scan.HeaderText = "ASSEMBLERS: " + scan.AsmCount + "   (" + scan.AssembleCount + " ASSEMBLING / " + scan.DisassembleCount + " DISASSEMBLING)";
-            scan.QueueText = "QUEUE: " + scan.QueueItems + " ITEM(S)";
+            scan.HeaderText = "ASSEMBLERS: " + scan.AsmCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "   (" + scan.AssembleCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " ASSEMBLING / " + scan.DisassembleCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " DISASSEMBLING)";
+            scan.QueueText = "QUEUE: " + scan.QueueItems.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " ITEM(S)";
             return scan;
         }
     }

@@ -1071,7 +1071,7 @@ namespace DisplayApps
         protected void DrawCategoryRow(MySpriteDrawFrame frame, string label, string icon, int count, string valueText, float ratio, Color color, float y)
         {
             frame.Add(Icon(icon, new Vector2(Left + 10f * S, y + 7f * S), 18f * S, new Color(200, 210, 225)));
-            AddText(frame, $"{label} ({count})", new Vector2(Left + 26f * S, y), 0.46f * S, count > 0 ? FgColor : new Color(110, 115, 125), TextAlignment.LEFT);
+            AddText(frame, $"{label} ({count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)})", new Vector2(Left + 26f * S, y), 0.46f * S, count > 0 ? FgColor : new Color(110, 115, 125), TextAlignment.LEFT);
             AddText(frame, valueText, new Vector2(Right, y), 0.46f * S, color, TextAlignment.RIGHT);
 
             RectangleF bar = new RectangleF(new Vector2(Left, y + 15f * S), new Vector2(Right - Left, 5f * S));
@@ -1257,12 +1257,12 @@ namespace DisplayApps
         {
             if (liters >= 1000000f) return $"{liters / 1000000f:0.00} ML";
             if (liters >= 1000f) return $"{liters / 1000f:0.0} kL";
-            return $"{liters:0} L";
+            return $"{liters:#,0} L";
         }
 
         protected static string FormatMass(float kg)
         {
-            return $"{kg:0} kg";
+            return $"{kg:#,0} kg";
         }
 
         protected static string FormatStorage(float liters, float kg, int storageType)

@@ -166,7 +166,7 @@ namespace DisplayApps
                 int drawn = DrawListGroup(frame, 0, null, ships.Count, y, 0f, bottom - y, rowH, _drawShipRow);
 
                 if (!ConfigScroll && ships.Count > drawn)
-                    DrawMore(frame, $"+{ships.Count - drawn} MORE");
+                    DrawMore(frame, $"+{(ships.Count - drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
             }
         }
 
@@ -338,7 +338,7 @@ namespace DisplayApps
                 ship.EtaText = "T-" + pTime;
 
                 ship.CargoRatio = ship.CargoMax > 0f ? ship.CargoVol / ship.CargoMax : 0f;
-                ship.CargoText = "Cargo " + (ship.CargoRatio * 100f).ToString("0") + "%";
+                ship.CargoText = "Cargo " + (ship.CargoRatio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "%";
 
                 // Shared damage percent from projectors + damaged blocks (same as DamageApp)
                 try
@@ -347,7 +347,7 @@ namespace DisplayApps
                     ship.DamagePercent = dmg;
                     if (dmg > 0.5f)
                     {
-                        ship.DamageText = $"DMG {dmg:0}%";
+                        ship.DamageText = $"DMG {dmg.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%";
                         ship.DamageColor = dmg > 25f ? new Color(220,60,50) : (dmg > 5f ? new Color(230,180,60) : new Color(230,200,90));
                     }
                     else
@@ -374,8 +374,8 @@ namespace DisplayApps
             }
 
             scan.Ships.Sort((x, y) => string.Compare(x.GridName, y.GridName, StringComparison.Ordinal));
-            scan.DockedText = "DOCKED: " + scan.Ships.Count + " GRID(S)";
-            scan.ConnText = "CONNECTORS: " + scan.Connected + "/" + scan.Connectors;
+            scan.DockedText = "DOCKED: " + scan.Ships.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " GRID(S)";
+            scan.ConnText = "CONNECTORS: " + scan.Connected.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "/" + scan.Connectors.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
             return scan;
         }
 

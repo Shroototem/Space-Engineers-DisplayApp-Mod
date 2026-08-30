@@ -98,7 +98,7 @@ namespace DisplayApps
                 bool showMissing = ParseSectionBool("ShowMissing", true);
 
                 AddText(frame, scan.Header, new Vector2(Left, 48f * S), 0.46f * S, FgColor, TextAlignment.LEFT);
-                AddText(frame, "REMAINING: " + scan.TotalRemaining + "/" + scan.TotalBlocks, new Vector2(Right, 48f * S), 0.46f * S, new Color(120,130,145), TextAlignment.RIGHT);
+                AddText(frame, "REMAINING: " + scan.TotalRemaining.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "/" + scan.TotalBlocks.ToString("N0", System.Globalization.CultureInfo.InvariantCulture), new Vector2(Right, 48f * S), 0.46f * S, new Color(120,130,145), TextAlignment.RIGHT);
                 DrawDivider(frame, 60f);
 
                 float y0 = 74f * S;
@@ -113,7 +113,7 @@ namespace DisplayApps
                     float headerH = 18f * S;
                     float gap = 6f * S;
                     float gh = ListGroupHeight(bottom - y0, 2, headerH, gap);
-                    DrawListGroup(frame, 0, "PROJECTORS ("+scan.Projectors.Count+")", scan.Projectors.Count, y0, headerH, gh, 28f*S, _drawProj);
+                    DrawListGroup(frame, 0, "PROJECTORS ("+scan.Projectors.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+")", scan.Projectors.Count, y0, headerH, gh, 28f*S, _drawProj);
                     DrawDivider(frame, (y0+headerH+gh+gap/2f)/S);
                     DrawListGroup(frame, 1, scan.MissingHeader, scan.Missing.Count, ListGroupTop(y0,1,gh,headerH,gap), headerH, gh, 24f*S, _drawMiss);
                 }
@@ -121,7 +121,7 @@ namespace DisplayApps
                 {
                     // stacked without scroll
                     float y = y0;
-                    AddText(frame, "PROJECTORS ("+scan.Projectors.Count+")", new Vector2(Left, y), 0.44f*S, new Color(180,190,205), TextAlignment.LEFT);
+                    AddText(frame, "PROJECTORS ("+scan.Projectors.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+")", new Vector2(Left, y), 0.44f*S, new Color(180,190,205), TextAlignment.LEFT);
                     y += 18f*S;
                     int drawn=0;
                     for (int i=0;i<scan.Projectors.Count;i++)
@@ -145,12 +145,12 @@ namespace DisplayApps
                 else if (showProjectors)
                 {
                     int drawn = DrawListGroup(frame,0,null,scan.Projectors.Count,y0,0f,bottom-y0,28f*S,_drawProj);
-                    if (!ConfigScroll && scan.Projectors.Count>drawn) DrawMore(frame,$"+{scan.Projectors.Count-drawn} MORE");
+                    if (!ConfigScroll && scan.Projectors.Count>drawn) DrawMore(frame,$"+{(scan.Projectors.Count-drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                 }
                 else if (showMissing)
                 {
                     int drawn = DrawListGroup(frame,0,scan.MissingHeader,scan.Missing.Count,y0,18f*S,bottom-y0,24f*S,_drawMiss);
-                    if (!ConfigScroll && scan.Missing.Count>drawn) DrawMore(frame,$"+{scan.Missing.Count-drawn} MORE");
+                    if (!ConfigScroll && scan.Missing.Count>drawn) DrawMore(frame,$"+{(scan.Missing.Count-drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                 }
             }
         }
@@ -216,7 +216,7 @@ namespace DisplayApps
                 row.Total = total;
                 row.Remaining = remaining;
                 row.Ratio = total>0 ? (float)remaining/total : 0f;
-                row.Value = remaining + "/" + total + " (" + (row.Ratio*100f).ToString("0")+"%)";
+                row.Value = remaining.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "/" + total.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " (" + (row.Ratio*100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+"%)";
                 row.Icon = "MyObjectBuilder_Projector/Projector";
                 scan.Projectors.Add(row);
 
@@ -277,12 +277,12 @@ namespace DisplayApps
                 r.BlockName = kv.Key;
                 r.Count = kv.Value;
                 r.Icon = missingIcons[kv.Key];
-                r.Value = "x"+kv.Value;
+                r.Value = "x"+kv.Value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
                 scan.Missing.Add(r);
             }
             scan.Missing.Sort((a,b)=> b.Count.CompareTo(a.Count));
-            scan.Header = "PROJECTORS: "+scan.Projectors.Count;
-            scan.MissingHeader = "MISSING BLOCKS ("+scan.Missing.Count+" types, "+scan.TotalRemaining+" total)";
+            scan.Header = "PROJECTORS: "+scan.Projectors.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+            scan.MissingHeader = "MISSING BLOCKS ("+scan.Missing.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+" types, "+scan.TotalRemaining.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+" total)";
             return scan;
         }
     }

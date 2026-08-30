@@ -174,7 +174,7 @@ namespace DisplayApps
                     listY + 6f * S, 18f * S, Bottom - rowsTop, 32f * S, _drawContainerRow);
 
                 if (!ConfigScroll && containers.Count > rows)
-                    DrawMore(frame, $"+{containers.Count - rows} MORE");
+                    DrawMore(frame, $"+{(containers.Count - rows).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
             }
         }
 
@@ -191,7 +191,7 @@ namespace DisplayApps
             scan.CatRatios[idx] = ratio;
             scan.CatTexts[idx] = count == 0
                 ? "EMPTY"
-                : FormatStorage(vol, mass) + " (" + (ratio * 100f).ToString("0") + "%)";
+                : FormatStorage(vol, mass) + " (" + (ratio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "%)";
         }
 
         StorageScan ScanGrid()
@@ -233,7 +233,7 @@ namespace DisplayApps
                 row.Vol = cVol;
                 row.Mass = cMass;
                 row.Ratio = cMax > 0f ? cVol / cMax : 0f;
-                row.Value = FormatStorage(cVol, cMass) + " (" + (row.Ratio * 100f).ToString("0") + "%)";
+                row.Value = FormatStorage(cVol, cMass) + " (" + (row.Ratio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "%)";
                 scan.Containers.Add(row);
             }
 
@@ -243,9 +243,9 @@ namespace DisplayApps
             float totalMatVol = scan.OreVol + scan.IngotVol + scan.CompVol + scan.AmmoVol + scan.ToolVol + scan.OtherVol;
             float totalMatMass = scan.OreMass + scan.IngotMass + scan.CompMass + scan.AmmoMass + scan.ToolMass + scan.OtherMass;
             scan.VolRatio = scan.TotalMax > 0f ? scan.TotalVol / scan.TotalMax : 0f;
-            scan.TotalText = FormatVolume(scan.TotalVol) + " / " + FormatVolume(scan.TotalMax) + " (" + (scan.VolRatio * 100f).ToString("0") + "%)";
+            scan.TotalText = FormatVolume(scan.TotalVol) + " / " + FormatVolume(scan.TotalMax) + " (" + (scan.VolRatio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "%)";
             scan.MassText = FormatMass(scan.TotalMass);
-            scan.ContainersHeader = "CONTAINERS (" + scan.Containers.Count + ")";
+            scan.ContainersHeader = "CONTAINERS (" + scan.Containers.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
             FillCat(scan, 0, scan.OreVol, scan.OreMass, scan.OreCount, totalMatVol, totalMatMass);
             FillCat(scan, 1, scan.IngotVol, scan.IngotMass, scan.IngotCount, totalMatVol, totalMatMass);
             FillCat(scan, 2, scan.CompVol, scan.CompMass, scan.CompCount, totalMatVol, totalMatMass);

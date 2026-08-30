@@ -103,7 +103,7 @@ namespace DisplayApps
                 int drawn = DrawListGroup(frame, 0, null, rows.Count, y, 0f, bottom - y, 24f * S, _drawRow);
 
                 if (!ConfigScroll && rows.Count > drawn)
-                    DrawMore(frame, $"+{rows.Count - drawn} MORE TYPE(S)");
+                    DrawMore(frame, $"+{(rows.Count - drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE TYPE(S)");
             }
         }
 
@@ -146,13 +146,13 @@ namespace DisplayApps
                 row.Count = kv.Value;
                 row.Name = NameFor(kv.Key);
                 row.Icon = IconFor(kv.Key);
-                row.Value = kv.Value > 0 ? "x" + kv.Value.ToString("N0") : "x0";
+                row.Value = kv.Value > 0 ? "x" + kv.Value.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) : "x0";
                 scan.Rows.Add(row);
             }
             scan.Rows.Sort((a, b) => b.Count.CompareTo(a.Count));
             scan.MaxCount = scan.Rows.Count > 0 && scan.Rows[0].Count > 0 ? scan.Rows[0].Count : 1;
-            scan.TypesText = "COMPONENT TYPES: " + scan.Rows.Count;
-            scan.TotalText = "TOTAL: " + scan.TotalItems.ToString("N0") + " ITEM(S)";
+            scan.TypesText = "COMPONENT TYPES: " + scan.Rows.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture);
+            scan.TotalText = "TOTAL: " + scan.TotalItems.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + " ITEM(S)";
             return scan;
         }
 

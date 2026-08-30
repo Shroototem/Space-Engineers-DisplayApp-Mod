@@ -225,7 +225,7 @@ namespace DisplayApps
                         }
 
                         if (totalRows > drawn)
-                            DrawMore(frame, $"+{totalRows - drawn} MORE");
+                            DrawMore(frame, $"+{(totalRows - drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                     }
                 }
             }
@@ -274,7 +274,7 @@ namespace DisplayApps
                     GasRow r = scan.RentRow();
                     r.Name = Truncate(BlockName(t), 22);
                     r.Ratio = fill;
-                    r.Value = $"{FormatVolume(cap * fill)} ({fill * 100f:0}%)";
+                    r.Value = $"{FormatVolume(cap * fill)} ({(fill * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
                     r.Icon = isH2 ? "IconHydrogen" : "IconOxygen";
                     r.BarColor = isH2 ? H2Color : O2Color;
                     scan.Tanks.Add(r);
@@ -303,7 +303,7 @@ namespace DisplayApps
                     GasRow r = scan.RentRow();
                     r.Name = Truncate(BlockName(v), 22);
                     r.Ratio = lvl;
-                    r.Value = $"O2 LEVEL {lvl * 100f:0}%";
+                    r.Value = $"O2 LEVEL {(lvl * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%";
                     r.Icon = "IconOxygen";
                     r.BarColor = VentColor;
                     scan.Vents.Add(r);
@@ -321,14 +321,14 @@ namespace DisplayApps
             // Summary strings - pure functions of the totals above.
             float h2Ratio2 = scan.H2Max > 0f ? scan.H2Stored / scan.H2Max : 0f;
             float o2Ratio2 = scan.O2Max > 0f ? scan.O2Stored / scan.O2Max : 0f;
-            scan.H2Text = $"{FormatVolume(scan.H2Stored)} / {FormatVolume(scan.H2Max)} ({h2Ratio2 * 100f:0}%)";
-            scan.O2Text = $"{FormatVolume(scan.O2Stored)} / {FormatVolume(scan.O2Max)} ({o2Ratio2 * 100f:0}%)";
+            scan.H2Text = $"{FormatVolume(scan.H2Stored)} / {FormatVolume(scan.H2Max)} ({(h2Ratio2 * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
+            scan.O2Text = $"{FormatVolume(scan.O2Stored)} / {FormatVolume(scan.O2Max)} ({(o2Ratio2 * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
             string farmText;
             if (scan.FarmsTotal == 0) farmText = "FARMS: NONE";
-            else farmText = $"FARMS: {scan.FarmsProducing}/{scan.FarmsTotal} ACTIVE";
+            else farmText = $"FARMS: {scan.FarmsProducing.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}/{scan.FarmsTotal.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} ACTIVE";
             string genText;
             if (scan.GensTotal == 0) genText = "GENS: NONE";
-            else genText = $"{scan.GensOn}/{scan.GensTotal} GENS ACTIVE";
+            else genText = $"{scan.GensOn.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}/{scan.GensTotal.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} GENS ACTIVE";
             scan.ProdText = $"{farmText}  |  {genText}";
             // Per-gas net flows like InfoPower: delta of stored volume per second
             long gid = 0;
@@ -379,20 +379,20 @@ namespace DisplayApps
             scan.MaxFlowH2 = 100000f; // total H2 input capacity (static)
             scan.MaxFlowO2 = 100000f; // total O2 input capacity (static) - matches +89100 L/s example with ~89% bar
             // Alternative could be scan.H2Max/10 etc, but keep static for stable MAX display
-            if (scan.NetFlowO2 > 0.01f) scan.FlowTextO2 = $"+{scan.NetFlowO2:0.0} L/s";
-            else if (scan.NetFlowO2 < -0.01f) scan.FlowTextO2 = $"{scan.NetFlowO2:0.0} L/s";
+            if (scan.NetFlowO2 > 0.01f) scan.FlowTextO2 = $"+{scan.NetFlowO2.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)} L/s";
+            else if (scan.NetFlowO2 < -0.01f) scan.FlowTextO2 = $"{scan.NetFlowO2.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)} L/s";
             else scan.FlowTextO2 = "0.0 L/s (IDLE)";
-            if (scan.NetFlowH2 > 0.01f) scan.FlowTextH2 = $"+{scan.NetFlowH2:0.0} L/s";
-            else if (scan.NetFlowH2 < -0.01f) scan.FlowTextH2 = $"{scan.NetFlowH2:0.0} L/s";
+            if (scan.NetFlowH2 > 0.01f) scan.FlowTextH2 = $"+{scan.NetFlowH2.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)} L/s";
+            else if (scan.NetFlowH2 < -0.01f) scan.FlowTextH2 = $"{scan.NetFlowH2.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)} L/s";
             else scan.FlowTextH2 = "0.0 L/s (IDLE)";
             // Legacy combined for ShowBars=true compatibility
             scan.FlowText = scan.FlowTextO2;
             float avgVent2 = scan.VentCount > 0 ? scan.VentLevel / scan.VentCount : 0f;
-            string ventText = scan.VentCount > 0 ? $"AVG ROOM O2: {avgVent2 * 100f:0}%" : "AIR VENTS: NONE";
-            scan.VentText = $"AIR VENTS: {scan.VentCount}   |   {ventText}";
-            scan.TotalHeader = "GAS TANKS & VENTS (" + (scan.H2Count + scan.O2Count + scan.VentCount) + ")";
-            scan.TanksHeader = "GAS TANKS (" + scan.Tanks.Count + ")";
-            scan.VentsHeader = "AIR VENTS (" + scan.Vents.Count + ")";
+            string ventText = scan.VentCount > 0 ? $"AVG ROOM O2: {(avgVent2 * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%" : "AIR VENTS: NONE";
+            scan.VentText = $"AIR VENTS: {scan.VentCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}   |   {ventText}";
+            scan.TotalHeader = "GAS TANKS & VENTS (" + (scan.H2Count + scan.O2Count + scan.VentCount).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
+            scan.TanksHeader = "GAS TANKS (" + scan.Tanks.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
+            scan.VentsHeader = "AIR VENTS (" + scan.Vents.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
             return scan;
         }
 

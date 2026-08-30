@@ -159,7 +159,7 @@ namespace DisplayApps
                     Color msColor = st.MaxMs > 5.0 ? new Color(230, 190, 60) : new Color(140, 210, 160);
 
                     AddText(frame, name, new Vector2(Left, y2), 0.44f * S, FgColor, TextAlignment.LEFT);
-                    AddText(frame, st.Count.ToString(), new Vector2(Right - 260f * S, y2), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
+                    AddText(frame, st.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture), new Vector2(Right - 260f * S, y2), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
                     AddText(frame, st.AvgMs.ToString("0.0") + "  " + st.MaxMs.ToString("0.0"), new Vector2(Right - 130f * S, y2), 0.44f * S, msColor, TextAlignment.RIGHT);
                     AddText(frame, st.ScanAvgMs.ToString("0.0"), new Vector2(Right, y2), 0.44f * S, new Color(170, 175, 185), TextAlignment.RIGHT);
                     y2 += 18f * S;

@@ -224,7 +224,7 @@ namespace DisplayApps
                     }
 
                     if (totalItems > drawn)
-                        DrawMore(frame, $"+{totalItems - drawn} MORE ITEM(S)");
+                        DrawMore(frame, $"+{(totalItems - drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE ITEM(S)");
                 }
             }
         }
@@ -265,7 +265,7 @@ namespace DisplayApps
             float val = ConfigStorageType == 2 ? amounts.Mass : amounts.Vol;
             row.Ratio = total > 0f ? val / total : 0f;
             row.HasStock = amounts.Vol > 0.001f || amounts.Mass > 0.001f;
-            row.Value = FormatStorage(amounts.Vol, amounts.Mass) + " (" + (row.Ratio * 100f).ToString("0") + "%)";
+            row.Value = FormatStorage(amounts.Vol, amounts.Mass) + " (" + (row.Ratio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + "%)";
             rows.Add(row);
         }
 
@@ -299,8 +299,8 @@ namespace DisplayApps
                 scan.RowIngots.Sort((a, b) => b.Vol.CompareTo(a.Vol));
             }
 
-            scan.OresHeader = "ORES (" + scan.RowOres.Count + ")";
-            scan.IngotsHeader = "INGOTS (" + scan.RowIngots.Count + ")";
+            scan.OresHeader = "ORES (" + scan.RowOres.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
+            scan.IngotsHeader = "INGOTS (" + scan.RowIngots.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
             return scan;
         }
 

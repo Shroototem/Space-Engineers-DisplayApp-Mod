@@ -266,7 +266,7 @@ namespace DisplayApps
                     int rows = DrawListGroup(frame, 0, scan.BatHeader, scan.Batteries.Count,
                         listY + 6f * S, 18f * S, Bottom - rowTopStart, 40f * S, _drawBatteryRow);
                     if (!ConfigScroll && batCount > rows)
-                        DrawMore(frame, $"+{batCount - rows} MORE BATTERY(IES)");
+                        DrawMore(frame, $"+{(batCount - rows).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE BATTERY(IES)");
                 }
                 else if (hasTop)
                 {
@@ -275,7 +275,7 @@ namespace DisplayApps
                     int rows = DrawListGroup(frame, 0, scan.DrawHeader, scan.TopDraws.Count,
                         listY + 6f * S, 18f * S, Bottom - rowTopStart, 24f*S, _drawTopRow);
                     if (!ConfigScroll && scan.TopDraws.Count > rows)
-                        DrawMore(frame, $"+{scan.TopDraws.Count - rows} MORE");
+                        DrawMore(frame, $"+{(scan.TopDraws.Count - rows).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
                 }
             }
         }
@@ -310,17 +310,17 @@ namespace DisplayApps
                     Color stateColor;
                     if (row.Charging)
                     {
-                        state = $"CHARGING (+{row.In:0.00} MW)";
+                        state = $"CHARGING (+{row.In.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW)";
                         stateColor = new Color(50, 210, 90);
                     }
                     else if (bat.ChargeMode == Sandbox.ModAPI.Ingame.ChargeMode.Recharge)
                     {
-                        state = $"RECHARGE (+{row.In:0.00} MW)";
+                        state = $"RECHARGE (+{row.In.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW)";
                         stateColor = new Color(80, 200, 230);
                     }
                     else if (row.Out > 0.005f)
                     {
-                        state = $"DISCHARGING (-{row.Out:0.00} MW)";
+                        state = $"DISCHARGING (-{row.Out.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW)";
                         stateColor = new Color(230, 60, 50);
                     }
                     else
@@ -330,7 +330,7 @@ namespace DisplayApps
                     }
                     row.State = state;
                     row.StateColor = stateColor;
-                    row.Details = $"{row.Stored:0.00} / {row.Max:0.00} MWh ({row.Ratio * 100f:0}%)";
+                    row.Details = $"{row.Stored.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} / {row.Max.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MWh ({(row.Ratio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
                     scan.Batteries.Add(row);
                     continue;
                 }
@@ -389,7 +389,7 @@ namespace DisplayApps
                             row.Name = Truncate(BlockName(b), 18);
                             row.Icon = "MyObjectBuilder_Component/PowerCell";
                             row.PowerMW = draw;
-                            row.Value = draw.ToString("0.00") + " MW";
+                            row.Value = draw.ToString("N2", System.Globalization.CultureInfo.InvariantCulture) + " MW";
                             scan.TopDraws.Add(row);
                         }
                     }
@@ -402,17 +402,17 @@ namespace DisplayApps
             float batMaxOut = scan.Bat.MaxOut;
             float netBat = scan.Bat.NetFlow;
             float batRatio = batMaxStored > 0f ? batStored / batMaxStored : 0f;
-            scan.StorageText = $"{batStored:0.00} / {batMaxStored:0.00} MWh ({batRatio * 100f:0}%)";
+            scan.StorageText = $"{batStored.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} / {batMaxStored.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MWh ({(batRatio * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
 
             string flowLabel = "0.00 MW (IDLE)";
             if (netBat > 0.001f)
-                flowLabel = $"+{netBat:0.00} MW IN ({FormatTimeHours((batMaxStored - batStored) / netBat)} TO FULL)";
+                flowLabel = $"+{netBat.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW IN ({FormatTimeHours((batMaxStored - batStored) / netBat)} TO FULL)";
             else if (netBat < -0.001f)
-                flowLabel = $"{netBat:0.00} MW OUT ({FormatTimeHours(batStored / -netBat)} TO EMPTY)";
+                flowLabel = $"{netBat.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW OUT ({FormatTimeHours(batStored / -netBat)} TO EMPTY)";
             scan.FlowText = flowLabel;
 
-            if (netBat > 0.001f) scan.FlowShortText = $"+{netBat:0.00} MW";
-            else if (netBat < -0.001f) scan.FlowShortText = $"{netBat:0.00} MW";
+            if (netBat > 0.001f) scan.FlowShortText = $"+{netBat.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW";
+            else if (netBat < -0.001f) scan.FlowShortText = $"{netBat.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW";
             else scan.FlowShortText = "0.00 MW (IDLE)";
 
             scan.CatTexts[0] = CatValue(scan.SolarCount, scan.SolarCur, scan.SolarMax);
@@ -423,7 +423,7 @@ namespace DisplayApps
             scan.CatRatios[2] = CatRatio(scan.ReactCur, scan.ReactMax);
             scan.CatTexts[3] = CatValue(scan.EngCount, scan.EngCur, scan.EngMax);
             scan.CatRatios[3] = CatRatio(scan.EngCur, scan.EngMax);
-            scan.BatHeader = "INDIVIDUAL BATTERIES (" + scan.BatCount + ")";
+            scan.BatHeader = "INDIVIDUAL BATTERIES (" + scan.BatCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture) + ")";
             // Top draws: sort by power descending, keep top 8
             if (scan.TopDraws.Count > 0)
             {
@@ -440,17 +440,17 @@ namespace DisplayApps
                 {
                     var r = scan.TopDraws[i];
                     r.Ratio = r.PowerMW / maxDraw;
-                    r.Value = $"{r.PowerMW:0.00} MW ({r.Ratio*100f:0}%)";
+                    r.Value = $"{r.PowerMW.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW ({(r.Ratio*100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
                 }
             }
-            scan.DrawHeader = "TOP POWER DRAWS ("+scan.TopDraws.Count+")";
+            scan.DrawHeader = "TOP POWER DRAWS ("+scan.TopDraws.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+")";
             return scan;
         }
 
         static string CatValue(int count, float cur, float max)
         {
             if (count == 0) return "NONE";
-            return $"{cur:0.00} / {max:0.00} MW ({(max > 0f ? cur / max : 0f) * 100f:0}%)";
+            return $"{cur.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} / {max.ToString("N2", System.Globalization.CultureInfo.InvariantCulture)} MW ({((max > 0f ? cur / max : 0f) * 100f).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}%)";
         }
 
         static float CatRatio(float cur, float max)

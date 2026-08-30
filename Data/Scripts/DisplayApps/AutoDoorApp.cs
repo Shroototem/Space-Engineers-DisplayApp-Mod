@@ -35,6 +35,8 @@ namespace DisplayApps
             public Vector3D PlayerPos;
             public bool HasPlayer;
             public string GpsText;
+            public readonly List<Vector3D> PlayerList = new List<Vector3D>();
+            public readonly List<string> PlayerNames = new List<string>();
             public string Header;
             public int OpenCount;
             public int TotalCount;
@@ -49,6 +51,8 @@ namespace DisplayApps
                 Doors.Clear();
                 HasPlayer = false;
                 GpsText = null;
+                PlayerList.Clear();
+                PlayerNames.Clear();
                 Header = null;
                 OpenCount = 0;
             }
@@ -184,6 +188,43 @@ namespace DisplayApps
                         try { pos = p.GetPosition(); } catch { try { pos = p.Character.GetPosition(); } catch { continue; } }
                     }
                     outPos.Add(pos);
+                }
+            }
+            catch {}
+        }
+
+        void GetBroadcastingPlayers(List<Vector3D> outPos, List<string> outNames)
+        {
+            outPos.Clear();
+            if(outNames!=null) outNames.Clear();
+            try
+            {
+                var s = MyAPIGateway.Session;
+                if (s == null) return;
+                var players = new List<VRage.Game.ModAPI.IMyPlayer>();
+                try { MyAPIGateway.Players.GetPlayers(players); } catch { return; }
+                for (int i = 0; i < players.Count; i++)
+                {
+                    var p = players[i];
+                    if (p == null || p.Character == null) continue;
+                    bool broadcasting = IsSuitBroadcasting(p);
+                    if (!broadcasting) continue;
+                    bool isLocal = false;
+                    try { isLocal = ReferenceEquals(p, s.LocalHumanPlayer) || ReferenceEquals(p, s.Player); } catch {}
+                    Vector3D pos;
+                    if (isLocal)
+                    {
+                        if (!TryGetLocalCharacterPos(out pos)) continue;
+                    }
+                    else
+                    {
+                        try { pos = p.GetPosition(); } catch { try { pos = p.Character.GetPosition(); } catch { continue; } }
+                    }
+                    outPos.Add(pos);
+                    string name = "";
+                    try { name = p.Character.DisplayName ?? ""; } catch {}
+                    if(string.IsNullOrEmpty(name)) name = $"Player{i+1}";
+                    if(outNames!=null) outNames.Add(name);
                 }
             }
             catch {}
@@ -351,18 +392,35 @@ namespace DisplayApps
                 {
                     AddText(frame, "PLAYER LOCATION", new Vector2(Left, y),0.46f*S,new Color(180,190,205),TextAlignment.LEFT);
                     y+=18f*S;
-                    if(scan.HasPlayer)
+                    if(scan.HasPlayer && scan.PlayerList.Count > 0)
                     {
-                        // GPS format like "GPS:Player:1234:5678:9101:"
-                        string gps = $"GPS:Player:{scan.PlayerPos.X:0}: {scan.PlayerPos.Y:0}: {scan.PlayerPos.Z:0}:";
+                        // Each broadcasting player on its own line with comma-formatted coords
+                        for(int pi=0; pi<scan.PlayerList.Count; pi++)
+                        {
+                            if(y + 16f*S > Bottom) break;
+                            Vector3D ppos = scan.PlayerList[pi];
+                            string pname = pi < scan.PlayerNames.Count && !string.IsNullOrEmpty(scan.PlayerNames[pi]) ? scan.PlayerNames[pi] : $"Player{pi+1}";
+                            string gps = $"GPS:{pname}:{ppos.X.ToString("0", System.Globalization.CultureInfo.InvariantCulture)}:{ppos.Y.ToString("0", System.Globalization.CultureInfo.InvariantCulture)}:{ppos.Z.ToString("0", System.Globalization.CultureInfo.InvariantCulture)}:";
+                            string coord = $"{ppos.X.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)}, {ppos.Y.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)}, {ppos.Z.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)}";
+                            AddText(frame, gps, new Vector2(Left, y),0.38f*S,FgColor,TextAlignment.LEFT);
+                            AddText(frame, coord, new Vector2(Right, y),0.38f*S,new Color(80,200,230),TextAlignment.RIGHT);
+                            y+=16f*S;
+                        }
+                    }
+                    else if(scan.HasPlayer)
+                    {
+                        // Fallback single player (should not happen when list is populated)
+                        string gps = $"GPS:Player:{scan.PlayerPos.X.ToString("0", System.Globalization.CultureInfo.InvariantCulture)}:{scan.PlayerPos.Y.ToString("0", System.Globalization.CultureInfo.InvariantCulture)}:{scan.PlayerPos.Z.ToString("0", System.Globalization.CultureInfo.InvariantCulture)}:";
                         AddText(frame, gps, new Vector2(Left, y),0.42f*S,FgColor,TextAlignment.LEFT);
                         AddText(frame, scan.GpsText, new Vector2(Right, y),0.42f*S,new Color(80,200,230),TextAlignment.RIGHT);
+                        y+=16f*S;
                     }
                     else
                     {
                         AddText(frame, "NO PLAYER FOUND", new Vector2(Left,y),0.42f*S,new Color(220,70,60),TextAlignment.LEFT);
+                        y+=16f*S;
                     }
-                    y+=22f*S;
+                    y+=6f*S;
                     DrawDivider(frame, y/S);
                     y+=6f*S;
                 }
@@ -370,7 +428,7 @@ namespace DisplayApps
                 if(!showDoors) return;
 
                 AddText(frame, scan.Header, new Vector2(Left,y),0.46f*S,FgColor,TextAlignment.LEFT);
-                AddText(frame, scan.OpenCount+"/"+scan.TotalCount+" OPEN", new Vector2(Right,y),0.46f*S,new Color(120,130,145),TextAlignment.RIGHT);
+                AddText(frame, scan.OpenCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+"/"+scan.TotalCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+" OPEN", new Vector2(Right,y),0.46f*S,new Color(120,130,145),TextAlignment.RIGHT);
                 y+=20f*S;
                 DrawDivider(frame, y/S);
                 y+=6f*S;
@@ -382,7 +440,7 @@ namespace DisplayApps
                     return;
                 }
                 int drawn = DrawListGroup(frame,0,null,doors.Count,y,0f,Bottom-y,28f*S,_drawDoorRow);
-                if(!ConfigScroll && doors.Count>drawn) DrawMore(frame,$"+{doors.Count-drawn} MORE");
+                if(!ConfigScroll && doors.Count>drawn) DrawMore(frame,$"+{(doors.Count-drawn).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} MORE");
             }
         }
 
@@ -423,7 +481,8 @@ namespace DisplayApps
             RefreshTerminalBlocks();
             AutoDoorScan scan = RentScan<AutoDoorScan>();
             var bPosList = new List<Vector3D>();
-            GetBroadcastingPlayerPositions(bPosList);
+            var bNameList = new List<string>();
+            GetBroadcastingPlayers(bPosList, bNameList);
             Vector3D ppos = default(Vector3D);
             bool hasPos = bPosList.Count > 0;
             if(hasPos)
@@ -431,8 +490,15 @@ namespace DisplayApps
                 ppos = bPosList[0];
                 scan.HasPlayer=true;
                 scan.PlayerPos=ppos;
-                scan.GpsText = $"{ppos.X:0.0}, {ppos.Y:0.0}, {ppos.Z:0.0} (+{bPosList.Count} broadcasting)";
-                if (bPosList.Count > 1) scan.GpsText += $" x{bPosList.Count}";
+                scan.GpsText = $"{ppos.X.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)}, {ppos.Y.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)}, {ppos.Z.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)} (+{bPosList.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} broadcasting)";
+                if (bPosList.Count > 1) scan.GpsText += $" x{bPosList.Count.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)}";
+                scan.PlayerList.Clear();
+                scan.PlayerNames.Clear();
+                for(int _pi=0; _pi<bPosList.Count; _pi++)
+                {
+                    scan.PlayerList.Add(bPosList[_pi]);
+                    scan.PlayerNames.Add(_pi < bNameList.Count ? bNameList[_pi] : $"Player{_pi+1}");
+                }
             }
             // Build DoorRows from current terminal blocks (but using cached positions for speed)
             // For display we need sorted by distance to nearest broadcasting player (multiplayer)
@@ -472,7 +538,7 @@ namespace DisplayApps
             scan.OpenCount=open;
             scan.TotalCount=scan.Doors.Count;
             scan.Range = GetRange();
-            scan.Header = "DOORS ("+scan.TotalCount+") - AUTO RANGE "+scan.Range.ToString("0.#",System.Globalization.CultureInfo.InvariantCulture)+"m";
+            scan.Header = "DOORS ("+scan.TotalCount.ToString("N0", System.Globalization.CultureInfo.InvariantCulture)+") - AUTO RANGE "+scan.Range.ToString("#,0.#",System.Globalization.CultureInfo.InvariantCulture)+"m";
             return scan;
         }
 
@@ -480,7 +546,7 @@ namespace DisplayApps
         {
             var r = _scan.Doors[idx];
             float range = _scan.Range > 0.5f ? _scan.Range : 4f;
-            string distText = _scan.HasPlayer ? $"{r.Distance:0.0}m" : "--";
+            string distText = _scan.HasPlayer ? $"{r.Distance.ToString("N1", System.Globalization.CultureInfo.InvariantCulture)}m" : "--";
             // Icon for door
             _frame.Add(Icon("MyObjectBuilder_Door/Door", new Vector2(Left+10f*S, y+8f*S), 16f*S, r.StateColor));
             AddText(_frame, r.Name, new Vector2(Left+24f*S,y),0.44f*S,FgColor,TextAlignment.LEFT);
