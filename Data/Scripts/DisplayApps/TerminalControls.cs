@@ -9,7 +9,6 @@ using VRage.ModAPI;
 using VRage.Utils;
 
 using MyTerminalBlock = Sandbox.ModAPI.IMyTerminalBlock;
-using MyTextPanel = Sandbox.ModAPI.IMyTextPanel;
 
 namespace DisplayApps
 {
@@ -33,19 +32,101 @@ namespace DisplayApps
         static readonly string[] FullListRegions = { "ComponentsInfo", "OreIngotInfo", "PowerInfo", "StorageInfo" };
         static readonly string[] StorageTypeRegions = { "OreIngotInfo", "StorageInfo" };
 
+        // Whitelist-safe generic path: register once for the base terminal type so
+        // any block that exposes a text surface (LCDs, cockpits, programmable
+        // blocks, remote controls, button panels / console modular buttons and
+        // modded displays) automatically gets the controls.  No hard-coded
+        // per-block enumeration and no reflection (MethodInfo / GetInterfaces /
+        // BindingFlags are prohibited by the mod whitelist).
+        static bool _baseRegistered;
+        static bool _customGetterHooked;
+
         public static void EnsureRegistered(MyTerminalBlock block)
         {
             try
             {
                 if (MyAPIGateway.TerminalControls == null || block == null) return;
-                if (block is Sandbox.ModAPI.IMyCockpit) EnsureFor<IMyCockpit>();
-                else if (block is Sandbox.ModAPI.IMyRemoteControl) EnsureFor<IMyRemoteControl>();
-                else if (block is Sandbox.ModAPI.IMyTextPanel) EnsureFor<MyTextPanel>();
-                else if (block is Sandbox.ModAPI.IMyProgrammableBlock) EnsureFor<IMyProgrammableBlock>();
+                if (!(block is Sandbox.ModAPI.Ingame.IMyTextSurfaceProvider)) return;
+
+                // Hook CustomControlGetter once so controls appear correctly
+                // positioned after the screen/app controls for every block type,
+                // not just the base type's list.  This is the whitelist-safe
+                // alternative to per-type AddControl + reflection.
+                if (!_customGetterHooked)
+                {
+                    _customGetterHooked = true;
+                    try { MyAPIGateway.TerminalControls.CustomControlGetter += CustomControlGetter; }
+                    catch { }
+                }
+
+                // Also register once for the base type as a fallback for the
+                // vanilla terminal path (AddControl<IMyTerminalBlock> is whitelisted
+                // and, per Keen's 2019 fix, is visible on derived blocks).
+                if (_baseRegistered) return;
+                if (!IsFactoryReady<MyTerminalBlock>()) return;
+                RegisterFor<MyTerminalBlock>(MyAPIGateway.TerminalControls);
+                _baseRegistered = true;
             }
             catch
             {
             }
+        }
+
+        static void CustomControlGetter(MyTerminalBlock block, List<IMyTerminalControl> controls)
+        {
+            try
+            {
+                if (block == null || controls == null) return;
+                if (!(block is Sandbox.ModAPI.Ingame.IMyTextSurfaceProvider)) return;
+                // Don't inject if this block has no DisplayApps script active
+                if (FirstActiveRegion(block) == null && CurrentRegion(block) == null) return;
+
+                // Ensure base controls exist; if not yet registered, create them lazily
+                // into a temp list and inject directly (avoids needing AddControl).
+                if (!_baseRegistered)
+                {
+                    // Use a dummy helper list to create controls without touching factory yet
+                    // Instead just ensure registration will happen next EnsureRegistered tick
+                    return;
+                }
+
+                // Avoid duplicate injection
+                for (int i = 0; i < controls.Count; i++)
+                    if (controls[i].Id != null && controls[i].Id.StartsWith("DisplayApps_")) return;
+
+                List<IMyTerminalControl> baseControls;
+                MyAPIGateway.TerminalControls.GetControls<MyTerminalBlock>(out baseControls);
+                if (baseControls == null) return;
+
+                int anchor = -1;
+                for (int i = 0; i < controls.Count; i++)
+                {
+                    string id = controls[i].Id;
+                    if (IsScreenControl(id)) anchor = i;
+                }
+                // Collect our controls to inject
+                List<IMyTerminalControl> toAdd = new List<IMyTerminalControl>(baseControls.Count);
+                for (int i = 0; i < baseControls.Count; i++)
+                    if (baseControls[i].Id != null && baseControls[i].Id.StartsWith("DisplayApps_"))
+                        toAdd.Add(baseControls[i]);
+
+                if (toAdd.Count == 0) return;
+
+                if (anchor >= 0)
+                {
+                    int insertAt = anchor + 1;
+                    for (int i = 0; i < toAdd.Count; i++)
+                    {
+                        if (insertAt <= controls.Count) controls.Insert(insertAt + i, toAdd[i]);
+                        else controls.Add(toAdd[i]);
+                    }
+                }
+                else
+                {
+                    for (int i = 0; i < toAdd.Count; i++) controls.Add(toAdd[i]);
+                }
+            }
+            catch { }
         }
 
         /// <summary>Registration + reposition for one block type. Called every
@@ -521,15 +602,11 @@ namespace DisplayApps
             return result;
         }
 
-        static IMyTerminalControlCombobox _screenSelector;
-        static bool _screenSelectorSearched;
-
         /// <summary>Reads the screen currently selected in the game's own
-        /// cockpit screen list ("LCD Panels"). The game stores the selection
-        /// on the block's MyMultiTextPanelComponent (SelectedPanelIndex) -
-        /// the same state its per-screen controls use. Falls back to scanning
-        /// the control list for a screen-selecting combobox. Returns -1 when
-        /// there is no selection state.</summary>
+        /// screen list ("LCD Panels"). The game stores the selection
+        /// on the block's MyMultiTextPanelComponent (SelectedPanelIndex) –
+        /// the same state its per-surface controls use. Generic: no
+        /// hard-coded block types, works for any IMyTextSurfaceProvider.</summary>
         static int GameSelectedScreen(MyTerminalBlock block)
         {
             try
@@ -542,45 +619,6 @@ namespace DisplayApps
                         return idx;
                     return -1;
                 }
-            }
-            catch { }
-            try
-            {
-                if (!(block is Sandbox.ModAPI.IMyCockpit)) return -1;
-                if (!_screenSelectorSearched)
-                {
-                    // Same guard as EnsureFor: GetControls<IMyCockpit> creates the
-                    // factory entry. Do not search until AreControlsCreated is true,
-                    // otherwise we permanently suppress MyCockpit's own controls.
-                    if (!IsFactoryReady<IMyCockpit>()) return -1;
-                    _screenSelectorSearched = true;
-                    IMyTerminalControls helper = MyAPIGateway.TerminalControls;
-                    if (helper == null) return -1;
-                    List<IMyTerminalControl> list;
-                    helper.GetControls<IMyCockpit>(out list);
-                    if (list != null)
-                    {
-                        for (int i = 0; i < list.Count; i++)
-                        {
-                            var cb = list[i] as IMyTerminalControlCombobox;
-                            if (cb == null) continue;
-                            string id = list[i].Id ?? "";
-                            if (id.IndexOf("Screen", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                id.IndexOf("Surface", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                id.IndexOf("LCD", StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                _screenSelector = cb;
-                                break;
-                            }
-                        }
-                    }
-                }
-                if (_screenSelector == null) return -1;
-                var getter = _screenSelector.Getter;
-                if (getter == null) return -1;
-                long val = getter(block);
-                if (val < 0 || val > 8) return -1;
-                return (int)val;
             }
             catch { }
             return -1;
